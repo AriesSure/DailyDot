@@ -1,0 +1,227 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="py-12 px-4 sm:px-6 lg:px-8" style="background-color: #FAEBD7;">
+    <div class="container mx-auto max-w-6xl">
+        <!-- Header -->
+        <div class="mb-8">
+            <div class="flex items-center justify-between">
+                <div class="flex items-center space-x-4">
+                    <div class="inline-flex items-center justify-center w-16 h-16 bg-gradient-to-br from-purple-500 to-pink-500 rounded-full shadow-lg">
+                        <i class="fas fa-chart-line text-2xl text-white"></i>
+                    </div>
+                    <div>
+                        <h1 class="text-4xl font-bold bg-gradient-to-r from-purple-600 to-pink-600 bg-clip-text text-transparent">
+                            Statistics Dashboard
+                        </h1>
+                        <p class="text-lg text-gray-700 leading-relaxed">
+                            Your personal habit and todo analytics
+                        </p>
+                    </div>
+                </div>
+                <a href="{{ url_for('account') }}" class="inline-flex items-center bg-blue-500 text-white px-6 py-3 rounded-lg hover:bg-blue-600 transition-all duration-300 shadow-md hover:shadow-lg transform hover:scale-105">
+                    <i class="fas fa-arrow-left mr-2"></i>
+                    Back to Account
+                </a>
+            </div>
+        </div>
+
+        <!-- Summary Cards -->
+        <div class="grid grid-cols-1 md:grid-cols-3 gap-6 mb-8">
+            <div class="bg-white rounded-xl shadow-lg p-6">
+                <div class="flex items-center">
+                    <div class="p-3 bg-blue-100 rounded-lg">
+                        <i class="fas fa-chart-line text-blue-600 text-xl"></i>
+                    </div>
+                    <div class="ml-4">
+                        <p class="text-sm font-medium text-gray-600">Total Habits</p>
+                        <p class="text-2xl font-bold text-gray-900">{{ habit_stats|length }}</p>
+                    </div>
+                </div>
+            </div>
+            
+            <div class="bg-white rounded-xl shadow-lg p-6">
+                <div class="flex items-center">
+                    <div class="p-3 bg-green-100 rounded-lg">
+                        <i class="fas fa-check-circle text-green-600 text-xl"></i>
+                    </div>
+                    <div class="ml-4">
+                        <p class="text-sm font-medium text-gray-600">Total Check-ins</p>
+                        <p class="text-2xl font-bold text-gray-900">{{ habit_stats|sum(attribute='total_checkins') }}</p>
+                    </div>
+                </div>
+            </div>
+            
+            <div class="bg-white rounded-xl shadow-lg p-6">
+                <div class="flex items-center">
+                    <div class="p-3 bg-purple-100 rounded-lg">
+                        <i class="fas fa-clipboard-check text-purple-600 text-xl"></i>
+                    </div>
+                    <div class="ml-4">
+                        <p class="text-sm font-medium text-gray-600">Todo Completion</p>
+                        <p class="text-2xl font-bold text-gray-900">{{ "%.1f"|format(todo_completion_rate) }}%</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Charts Section -->
+        <div class="grid grid-cols-1 lg:grid-cols-2 gap-8">
+                         <!-- Daily Check-ins Chart -->
+             <div class="bg-white rounded-xl shadow-lg p-6">
+                 <h3 class="text-xl font-semibold text-gray-800 mb-4">Daily Check-ins (Last 14 Days)</h3>
+                <div class="h-64">
+                    <canvas id="dailyChart"></canvas>
+                </div>
+            </div>
+
+            <!-- Habit Performance Chart -->
+            <div class="bg-white rounded-xl shadow-lg p-6">
+                <h3 class="text-xl font-semibold text-gray-800 mb-4">Habit Performance</h3>
+                <div class="h-64">
+                    <canvas id="habitChart"></canvas>
+                </div>
+            </div>
+        </div>
+
+        <!-- Todo Stats -->
+        <div class="mt-8 bg-white rounded-xl shadow-lg p-6">
+            <h3 class="text-xl font-semibold text-gray-800 mb-4">Todo Statistics</h3>
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+                <div class="text-center">
+                    <div class="text-3xl font-bold text-blue-600">{{ total_todos }}</div>
+                    <div class="text-sm text-gray-600">Total Todos</div>
+                </div>
+                <div class="text-center">
+                    <div class="text-3xl font-bold text-green-600">{{ completed_todos }}</div>
+                    <div class="text-sm text-gray-600">Completed Todos</div>
+                </div>
+            </div>
+            <div class="mt-4">
+                <div class="flex justify-between text-sm text-gray-600 mb-1">
+                    <span>Completion Rate</span>
+                    <span>{{ "%.1f"|format(todo_completion_rate) }}%</span>
+                </div>
+                <div class="w-full bg-gray-200 rounded-full h-2">
+                    <div class="bg-green-500 h-2 rounded-full" style="width: {{ todo_completion_rate }}%"></div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Top Habits -->
+          {% if habit_stats %}
+          <div class="mt-8 bg-white rounded-xl shadow-lg p-6">
+              <h3 class="text-xl font-semibold text-gray-800 mb-4">Top 3 Performing Habits</h3>
+              <div class="space-y-4">
+                  {% for habit in habit_stats[:3] %}
+                 <div class="flex items-center justify-between p-4 bg-gray-50 rounded-lg">
+                     <div class="flex items-center">
+                                                   {% if loop.index == 1 %}
+                              <i class="fas fa-medal text-yellow-500 text-2xl mr-6"></i>
+                          {% elif loop.index == 2 %}
+                              <i class="fas fa-medal text-gray-400 text-2xl mr-6"></i>
+                          {% elif loop.index == 3 %}
+                              <i class="fas fa-medal text-amber-600 text-2xl mr-6"></i>
+                          {% endif %}
+                          <i class="{{ habit.icon }} text-blue-600 text-xl mr-3"></i>
+                         <span class="font-medium text-gray-800">{{ habit.name }}</span>
+                     </div>
+                     <div class="text-right">
+                         <div class="text-lg font-bold text-blue-600">{{ habit.total_checkins }}</div>
+                         <div class="text-sm text-gray-600">check-ins</div>
+                     </div>
+                 </div>
+                 {% endfor %}
+             </div>
+         </div>
+         {% endif %}
+    </div>
+</div>
+
+<!-- Chart.js CDN -->
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+
+<script>
+document.addEventListener('DOMContentLoaded', function() {
+    // Daily Check-ins Chart
+    const dailyCtx = document.getElementById('dailyChart').getContext('2d');
+    const dailyChart = new Chart(dailyCtx, {
+        type: 'line',
+        data: {
+            labels: {{ daily_data|map(attribute='date')|list|tojson }},
+            datasets: [{
+                label: 'Check-ins',
+                data: {{ daily_data|map(attribute='count')|list|tojson }},
+                borderColor: 'rgb(59, 130, 246)',
+                backgroundColor: 'rgba(59, 130, 246, 0.1)',
+                borderWidth: 3,
+                fill: true,
+                tension: 0.4
+            }]
+        },
+        options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            plugins: {
+                legend: {
+                    display: false
+                }
+            },
+            scales: {
+                y: {
+                    beginAtZero: true,
+                    ticks: {
+                        stepSize: 1
+                    }
+                }
+            }
+        }
+    });
+
+    // Habit Performance Chart
+    const habitCtx = document.getElementById('habitChart').getContext('2d');
+    const habitChart = new Chart(habitCtx, {
+        type: 'bar',
+        data: {
+            labels: {{ habit_stats|map(attribute='name')|list|tojson }},
+            datasets: [{
+                label: 'Check-ins',
+                data: {{ habit_stats|map(attribute='total_checkins')|list|tojson }},
+                backgroundColor: [
+                    'rgba(59, 130, 246, 0.8)',
+                    'rgba(16, 185, 129, 0.8)',
+                    'rgba(245, 158, 11, 0.8)',
+                    'rgba(239, 68, 68, 0.8)',
+                    'rgba(139, 92, 246, 0.8)'
+                ],
+                borderColor: [
+                    'rgb(59, 130, 246)',
+                    'rgb(16, 185, 129)',
+                    'rgb(245, 158, 11)',
+                    'rgb(239, 68, 68)',
+                    'rgb(139, 92, 246)'
+                ],
+                borderWidth: 2
+            }]
+        },
+        options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            plugins: {
+                legend: {
+                    display: false
+                }
+            },
+            scales: {
+                y: {
+                    beginAtZero: true,
+                    ticks: {
+                        stepSize: 1
+                    }
+                }
+            }
+        }
+    });
+});
+</script>
+{% endblock %} 

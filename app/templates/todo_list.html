@@ -1,0 +1,454 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="py-12 px-4 sm:px-6 lg:px-8" style="background-color: #FAEBD7;">
+    <div class="container mx-auto max-w-4xl">
+        <!-- Header -->
+        <div class="mb-8">
+            <div class="flex items-center justify-between">
+                <div class="flex items-center space-x-4">
+                    <div class="inline-flex items-center justify-center w-16 h-16 bg-gradient-to-br from-purple-500 to-pink-500 rounded-full shadow-lg">
+                        <i class="fas fa-list-check text-2xl text-white"></i>
+                    </div>
+                    <div>
+                        <h1 class="text-4xl font-bold bg-gradient-to-r from-purple-600 to-pink-600 bg-clip-text text-transparent">
+                            Todo List
+                        </h1>
+                        <p class="text-lg text-gray-700 leading-relaxed">
+                            All your todos, newest first
+                        </p>
+                    </div>
+                </div>
+                <a href="{{ url_for('account') }}" class="inline-flex items-center bg-blue-500 text-white px-6 py-3 rounded-lg hover:bg-blue-600 transition-all duration-300 shadow-md hover:shadow-lg transform hover:scale-105">
+                    <i class="fas fa-arrow-left mr-2"></i>
+                    Back to Account
+                </a>
+            </div>
+        </div>
+
+        <!-- Todo List -->
+        <div class="rounded-xl p-8" style="background-color: #FAEBD7;">
+            {% if todos %}
+            <div class="grid grid-cols-1 gap-3" id="todo-list">
+                {% for todo in todos %}
+                                         <div class="todo-card shadow p-3 rounded-lg flex items-center justify-between border-2 border-gray-700 transition-all duration-300 hover:shadow-lg cursor-pointer {% if todo.completed %}opacity-75{% endif %}" style="background-color: #FFF5EE;" data-todo-id="{{ todo.id }}" data-completed="{{ todo.completed|lower }}">
+                        <div class="flex items-center flex-1 max-w-2xl">
+                            <div class="todo-checkbox w-5 h-5 border-2 rounded mr-3 flex items-center justify-center cursor-pointer {% if todo.completed %}bg-green-500 border-green-500{% else %}border-gray-400{% endif %}">
+                                <i class="fas fa-check text-white text-xs {% if not todo.completed %}hidden{% endif %}"></i>
+                            </div>
+                            <div class="flex-1 min-w-0">
+                                <div class="flex items-center justify-between">
+                                    <div class="min-w-0 flex-1">
+                                        <div class="text-sm {% if todo.completed %}line-through text-gray-400{% else %}text-gray-500{% endif %}">{{ todo.date }} at {{ todo.time }}</div>
+                                        <div class="text-lg font-semibold {% if todo.completed %}line-through text-gray-400{% else %}text-gray-800{% endif %} truncate">{{ todo.event }}</div>
+                                        {% if todo.note %}
+                                        <div class="text-sm text-gray-600 mt-1 truncate">{{ todo.note }}</div>
+                                        {% endif %}
+                                    </div>
+
+                                </div>
+                            </div>
+                        </div>
+                        <div class="flex items-center space-x-2 ml-4 flex-shrink-0">
+                            <button class="edit-todo-btn bg-yellow-500 hover:bg-yellow-600 text-white p-2 rounded-lg transition-all duration-300 transform hover:scale-105" data-todo-id="{{ todo.id }}" data-todo-event="{{ todo.event }}" data-todo-date="{{ todo.date }}" data-todo-time="{{ todo.time }}" data-todo-note="{{ todo.note or '' }}">
+                                <i class="fas fa-edit"></i>
+                            </button>
+                            <button class="delete-todo-btn bg-red-500 hover:bg-red-600 text-white p-2 rounded-lg transition-all duration-300 transform hover:scale-105" data-todo-id="{{ todo.id }}" data-todo-event="{{ todo.event }}">
+                                <i class="fas fa-trash"></i>
+                            </button>
+                        </div>
+                    </div>
+                {% endfor %}
+            </div>
+            {% else %}
+            <div class="text-center text-gray-500 py-12">
+                <i class="fas fa-clipboard-list text-6xl mb-6"></i>
+                <h3 class="text-xl font-semibold mb-2">No todos yet</h3>
+                <p class="text-gray-600 mb-6">Start creating todos to organize your tasks!</p>
+                <a href="{{ url_for('home') }}" class="inline-flex items-center bg-blue-500 text-white px-6 py-3 rounded-lg hover:bg-blue-600 transition-all duration-300 shadow-md hover:shadow-lg transform hover:scale-105">
+                    <i class="fas fa-plus mr-2"></i>
+                    Create Your First Todo
+                </a>
+            </div>
+            {% endif %}
+        </div>
+    </div>
+</div>
+
+<!-- Edit Todo Modal -->
+<div id="editTodoModal" class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 hidden">
+    <div class="bg-white rounded-2xl shadow-2xl p-8 max-w-md mx-4 transform transition-all duration-300 scale-95 opacity-0" id="editTodoModalContent">
+        <div class="text-center mb-6">
+            <h2 class="text-2xl font-bold text-gray-800 mb-2">Edit Todo</h2>
+            <p class="text-gray-600">Modify your todo details</p>
+        </div>
+
+        <form id="editTodoForm" class="space-y-6">
+            <input type="hidden" id="editTodoId" name="todo_id">
+            
+            <!-- Event Name -->
+            <div>
+                <label for="editTodoEvent" class="block text-sm font-semibold text-gray-700 mb-2">Event Name</label>
+                <input type="text" id="editTodoEvent" name="event" required
+                       class="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all duration-300"
+                       placeholder="Enter event name">
+            </div>
+
+            <!-- Date -->
+            <div>
+                <label for="editTodoDate" class="block text-sm font-semibold text-gray-700 mb-2">Date</label>
+                <input type="date" id="editTodoDate" name="date" required
+                       class="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all duration-300">
+            </div>
+
+            <!-- Time -->
+            <div>
+                <label for="editTodoTime" class="block text-sm font-semibold text-gray-700 mb-2">Time</label>
+                <input type="time" id="editTodoTime" name="time" required
+                       class="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all duration-300">
+            </div>
+
+            <!-- Note -->
+            <div>
+                <label for="editTodoNote" class="block text-sm font-semibold text-gray-700 mb-2">Note (Optional)</label>
+                <textarea id="editTodoNote" name="note" rows="3"
+                          class="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all duration-300 resize-none"
+                          placeholder="Add a note about this todo..."></textarea>
+            </div>
+
+            <!-- Buttons -->
+            <div class="flex space-x-4 pt-6">
+                <button type="submit" class="flex-1 bg-blue-600 text-white px-6 py-3 rounded-lg hover:bg-blue-700 transition-all duration-300 shadow-md hover:shadow-lg transform hover:scale-105 font-semibold">
+                    <i class="fas fa-save mr-2"></i>
+                    Save Todo
+                </button>
+                <button type="button" id="cancelEditTodo" class="flex-1 bg-gray-500 text-white px-6 py-3 rounded-lg hover:bg-gray-600 transition-all duration-300 shadow-md hover:shadow-lg transform hover:scale-105 font-semibold">
+                    <i class="fas fa-times mr-2"></i>
+                    Cancel
+                </button>
+            </div>
+        </form>
+    </div>
+</div>
+
+<!-- Delete Confirmation Modal -->
+<div id="deleteConfirmModal" class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 hidden">
+    <div class="bg-white rounded-2xl shadow-2xl p-8 max-w-md mx-4 transform transition-all duration-300 scale-95 opacity-0">
+        <div class="text-center mb-6">
+            <i class="fas fa-exclamation-triangle text-6xl text-red-500 mb-4"></i>
+            <h2 class="text-2xl font-bold text-gray-800 mb-2">Delete Todo</h2>
+            <p class="text-gray-600">Are you sure you want to delete "<span id="deleteTodoName" class="font-semibold"></span>"?</p>
+            <p class="text-sm text-gray-500 mt-2">This action cannot be undone.</p>
+        </div>
+
+        <div class="flex space-x-4 pt-6">
+            <button id="confirmDeleteBtn" class="flex-1 bg-red-600 text-white px-6 py-3 rounded-lg hover:bg-red-700 transition-all duration-300 shadow-md hover:shadow-lg transform hover:scale-105 font-semibold">
+                <i class="fas fa-trash mr-2"></i>
+                Delete
+            </button>
+            <button id="cancelDeleteBtn" class="flex-1 bg-gray-500 text-white px-6 py-3 rounded-lg hover:bg-gray-600 transition-all duration-300 shadow-md hover:shadow-lg transform hover:scale-105 font-semibold">
+                <i class="fas fa-times mr-2"></i>
+                Cancel
+            </button>
+        </div>
+    </div>
+</div>
+
+<script>
+document.addEventListener('DOMContentLoaded', function() {
+    // Todo completion functionality
+    document.querySelectorAll('.todo-card').forEach(card => {
+        // Add click event to the entire todo card
+        card.addEventListener('click', function(e) {
+            // Don't trigger if clicking on edit/delete buttons or checkbox
+            if (e.target.closest('.edit-todo-btn') || e.target.closest('.delete-todo-btn') || e.target.closest('.todo-checkbox')) {
+                return;
+            }
+            
+            // Toggle completion status
+            const todoId = card.getAttribute('data-todo-id');
+            const isCompleted = card.getAttribute('data-completed') === 'true';
+            
+            // Send completion request
+            fetch(`/todo/complete/${todoId}`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'X-CSRFToken': document.querySelector('meta[name="csrf-token"]').getAttribute('content')
+                }
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.success) {
+                    // Toggle completion state
+                    if (isCompleted) {
+                        // Mark as incomplete
+                        card.classList.remove('opacity-75');
+                        card.setAttribute('data-completed', 'false');
+                        const checkbox = card.querySelector('.todo-checkbox');
+                        const checkIcon = checkbox.querySelector('i');
+                        const timeElement = card.querySelector('.text-sm');
+                        const eventElement = card.querySelector('.text-lg.font-semibold');
+                        
+                        checkbox.classList.remove('bg-green-500', 'border-green-500');
+                        checkbox.classList.add('border-gray-400');
+                        checkIcon.classList.add('hidden');
+                        timeElement.classList.remove('line-through', 'text-gray-400');
+                        timeElement.classList.add('text-gray-500');
+                        eventElement.classList.remove('line-through', 'text-gray-400');
+                        eventElement.classList.add('text-gray-800');
+                    } else {
+                        // Mark as completed
+                        card.classList.add('opacity-75');
+                        card.setAttribute('data-completed', 'true');
+                        const checkbox = card.querySelector('.todo-checkbox');
+                        const checkIcon = checkbox.querySelector('i');
+                        const timeElement = card.querySelector('.text-sm');
+                        const eventElement = card.querySelector('.text-lg.font-semibold');
+                        
+                        checkbox.classList.add('bg-green-500', 'border-green-500');
+                        checkbox.classList.remove('border-gray-400');
+                        checkIcon.classList.remove('hidden');
+                        timeElement.classList.add('line-through', 'text-gray-400');
+                        timeElement.classList.remove('text-gray-500');
+                        eventElement.classList.add('line-through', 'text-gray-400');
+                        eventElement.classList.remove('text-gray-800');
+                    }
+                } else {
+                    alert('Error updating todo: ' + data.message);
+                }
+            })
+            .catch(error => {
+                console.error('Error:', error);
+                alert('An error occurred while updating the todo.');
+            });
+        });
+        
+        // Checkbox click event (existing functionality)
+        const checkbox = card.querySelector('.todo-checkbox');
+        checkbox.addEventListener('click', function(e) {
+            e.stopPropagation();
+            const todoId = card.getAttribute('data-todo-id');
+            const checkIcon = this.querySelector('i');
+            const timeElement = card.querySelector('.text-sm');
+            const eventElement = card.querySelector('.text-lg.font-semibold');
+            const isCompleted = card.getAttribute('data-completed') === 'true';
+            
+            // Send completion request
+            fetch(`/todo/complete/${todoId}`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'X-CSRFToken': document.querySelector('meta[name="csrf-token"]').getAttribute('content')
+                }
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.success) {
+                    // Toggle completion state
+                    if (isCompleted) {
+                        // Mark as incomplete
+                        this.classList.remove('bg-green-500', 'border-green-500');
+                        this.classList.add('border-gray-400');
+                        checkIcon.classList.add('hidden');
+                        timeElement.classList.remove('line-through', 'text-gray-400');
+                        timeElement.classList.add('text-gray-500');
+                        eventElement.classList.remove('line-through', 'text-gray-400');
+                        eventElement.classList.add('text-gray-800');
+                        card.classList.remove('opacity-75');
+                        card.setAttribute('data-completed', 'false');
+                    } else {
+                        // Mark as completed
+                        this.classList.add('bg-green-500', 'border-green-500');
+                        this.classList.remove('border-gray-400');
+                        checkIcon.classList.remove('hidden');
+                        timeElement.classList.add('line-through', 'text-gray-400');
+                        timeElement.classList.remove('text-gray-500');
+                        eventElement.classList.add('line-through', 'text-gray-400');
+                        eventElement.classList.remove('text-gray-800');
+                        card.classList.add('opacity-75');
+                        card.setAttribute('data-completed', 'true');
+                    }
+                } else {
+                    alert('Error updating todo: ' + data.message);
+                }
+            })
+            .catch(error => {
+                console.error('Error:', error);
+                alert('An error occurred while updating the todo.');
+            });
+        });
+    });
+
+    // Edit Todo functionality
+    const editTodoModal = document.getElementById('editTodoModal');
+    const editTodoModalContent = document.getElementById('editTodoModalContent');
+    const cancelEditTodo = document.getElementById('cancelEditTodo');
+    const editTodoForm = document.getElementById('editTodoForm');
+
+    // Show edit modal
+    document.querySelectorAll('.edit-todo-btn').forEach(btn => {
+        btn.addEventListener('click', function(e) {
+            e.stopPropagation();
+            const todoId = this.getAttribute('data-todo-id');
+            const todoEvent = this.getAttribute('data-todo-event');
+            const todoDate = this.getAttribute('data-todo-date');
+            const todoTime = this.getAttribute('data-todo-time');
+            const todoNote = this.getAttribute('data-todo-note');
+            
+            // Convert date format from DD/MM/YYYY to YYYY-MM-DD
+            const dateParts = todoDate.split('/');
+            const formattedDate = `${dateParts[2]}-${dateParts[1]}-${dateParts[0]}`;
+            
+            // Fill form data
+            document.getElementById('editTodoId').value = todoId;
+            document.getElementById('editTodoEvent').value = todoEvent;
+            document.getElementById('editTodoDate').value = formattedDate;
+            document.getElementById('editTodoTime').value = todoTime;
+            document.getElementById('editTodoNote').value = todoNote;
+            
+            // Show modal
+            editTodoModal.classList.remove('hidden');
+            setTimeout(() => {
+                editTodoModalContent.classList.remove('scale-95', 'opacity-0');
+                editTodoModalContent.classList.add('scale-100', 'opacity-100');
+            }, 10);
+        });
+    });
+
+    // Hide edit modal
+    function hideEditTodoModal() {
+        editTodoModalContent.classList.remove('scale-100', 'opacity-100');
+        editTodoModalContent.classList.add('scale-95', 'opacity-0');
+        setTimeout(() => {
+            editTodoModal.classList.add('hidden');
+            editTodoForm.reset();
+        }, 300);
+    }
+
+    // Cancel edit button
+    cancelEditTodo.addEventListener('click', hideEditTodoModal);
+
+    // Click outside to close edit modal
+    editTodoModal.addEventListener('click', function(e) {
+        if (e.target === editTodoModal) {
+            hideEditTodoModal();
+        }
+    });
+
+    // Edit form submission
+    editTodoForm.addEventListener('submit', function(e) {
+        e.preventDefault();
+        
+        const todoId = document.getElementById('editTodoId').value;
+        const formData = new FormData(this);
+        const data = Object.fromEntries(formData);
+        
+        // Convert date format from YYYY-MM-DD to DD/MM/YYYY
+        const dateParts = data.date.split('-');
+        data.date = `${dateParts[2]}/${dateParts[1]}/${dateParts[0]}`;
+        
+        // Send update request
+        fetch(`/todo/edit/${todoId}`, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'X-CSRFToken': document.querySelector('meta[name="csrf-token"]').getAttribute('content')
+            },
+            body: JSON.stringify(data)
+        })
+        .then(response => response.json())
+        .then(data => {
+            if (data.success) {
+                // Success - reload page to show updated todo
+                window.location.reload();
+            } else {
+                // Show error
+                alert('Error updating todo: ' + data.message);
+            }
+        })
+        .catch(error => {
+            console.error('Error:', error);
+            alert('An error occurred while updating the todo.');
+        });
+    });
+
+    // Delete Todo functionality
+    const deleteConfirmModal = document.getElementById('deleteConfirmModal');
+    const confirmDeleteBtn = document.getElementById('confirmDeleteBtn');
+    const cancelDeleteBtn = document.getElementById('cancelDeleteBtn');
+    let todoToDelete = null;
+
+    // Show delete confirmation modal
+    document.querySelectorAll('.delete-todo-btn').forEach(btn => {
+        btn.addEventListener('click', function(e) {
+            e.stopPropagation();
+            const todoId = this.getAttribute('data-todo-id');
+            const todoEvent = this.getAttribute('data-todo-event');
+            
+            todoToDelete = todoId;
+            document.getElementById('deleteTodoName').textContent = todoEvent;
+            
+            // Show modal
+            deleteConfirmModal.classList.remove('hidden');
+            setTimeout(() => {
+                deleteConfirmModal.querySelector('.bg-white').classList.remove('scale-95', 'opacity-0');
+                deleteConfirmModal.querySelector('.bg-white').classList.add('scale-100', 'opacity-100');
+            }, 10);
+        });
+    });
+
+    // Hide delete confirmation modal
+    function hideDeleteConfirmModal() {
+        deleteConfirmModal.querySelector('.bg-white').classList.remove('scale-100', 'opacity-100');
+        deleteConfirmModal.querySelector('.bg-white').classList.add('scale-95', 'opacity-0');
+        setTimeout(() => {
+            deleteConfirmModal.classList.add('hidden');
+            todoToDelete = null;
+        }, 300);
+    }
+
+    // Cancel delete button
+    cancelDeleteBtn.addEventListener('click', hideDeleteConfirmModal);
+
+    // Click outside to close delete modal
+    deleteConfirmModal.addEventListener('click', function(e) {
+        if (e.target === deleteConfirmModal) {
+            hideDeleteConfirmModal();
+        }
+    });
+
+    // Confirm delete button
+    confirmDeleteBtn.addEventListener('click', function() {
+        if (!todoToDelete) return;
+        
+        // Send delete request
+        fetch(`/todo/delete/${todoToDelete}`, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'X-CSRFToken': document.querySelector('meta[name="csrf-token"]').getAttribute('content')
+            }
+        })
+        .then(response => response.json())
+        .then(data => {
+            if (data.success) {
+                // Success - remove todo from DOM
+                const todoCard = document.querySelector(`[data-todo-id="${todoToDelete}"]`);
+                if (todoCard) {
+                    todoCard.remove();
+                }
+                hideDeleteConfirmModal();
+            } else {
+                // Show error
+                alert('Error deleting todo: ' + data.message);
+            }
+        })
+        .catch(error => {
+            console.error('Error:', error);
+            alert('An error occurred while deleting the todo.');
+        });
+    });
+});
+</script>
+{% endblock %} 

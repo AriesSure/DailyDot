@@ -1,0 +1,854 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="py-12 px-4 sm:px-6 lg:px-8" style="background-color: #FAEBD7;">
+    <div class="max-w-4xl mx-auto">
+        <!-- Enhanced Header -->
+        <div class="text-center mb-8">
+            <div class="inline-flex items-center justify-center w-16 h-16 bg-gradient-to-br from-purple-500 to-pink-500 rounded-full mb-6 shadow-lg">
+                <i class="fas fa-id-card text-2xl text-white"></i>
+            </div>
+            <h1 class="text-4xl font-bold bg-gradient-to-r from-purple-600 to-pink-600 bg-clip-text text-transparent">
+                Create Achievement Card
+            </h1>
+        </div>
+
+        <!-- Enhanced Card Preview -->
+        <div class="flex justify-center mb-12">
+            <div class="relative group">
+                <!-- Subtle glow effect -->
+                <div class="absolute -inset-2 bg-gradient-to-r from-purple-200 to-pink-200 rounded-3xl blur-sm opacity-30 group-hover:opacity-50 transition-opacity duration-500"></div>
+
+                <!-- Main card with enhanced styling -->
+                <div id="cardPreview" class="relative w-[500px] min-h-[420px] bg-white rounded-3xl shadow-xl overflow-hidden transform transition-all duration-300 hover:scale-[1.02] hover:shadow-2xl">
+                    <!-- Top Image Section with subtle enhancements -->
+                    <div id="cardBackground" class="w-full h-64 relative transition-all duration-500 card-cover" style="background-image: linear-gradient(135deg, #667eea 0%, #764ba2 100%); background-size: cover; background-position: center; background-repeat: no-repeat;">
+                        <!-- Enhanced overlay -->
+                        <div class="absolute inset-0 bg-gradient-to-t from-black/30 via-transparent to-black/10"></div>
+
+                        <!-- Subtle decorative elements -->
+                        <div class="absolute top-4 right-4 w-2 h-2 bg-white bg-opacity-40 rounded-full animate-pulse"></div>
+                        <div class="absolute top-6 right-8 w-1 h-1 bg-white bg-opacity-30 rounded-full animate-pulse delay-300"></div>
+                    </div>
+
+                    <!-- Bottom Content Section with refined styling -->
+                    <div class="min-h-40 h-auto bg-gradient-to-br from-white to-gray-50 p-6 flex flex-col justify-start relative">
+                        <!-- Subtle top accent -->
+                        <div class="absolute top-0 left-6 right-6 h-px bg-gradient-to-r from-transparent via-purple-200 to-transparent"></div>
+
+                        <!-- Date and Weekday with enhanced styling -->
+                        <div class="text-left -mt-4 mb-3">
+                            <div id="cardDate" class="text-2xl font-bold text-gray-800">
+                                <span id="monthDay" class="drop-shadow-sm"></span>
+                                <span id="weekday" class="text-lg font-medium text-gray-500 ml-2"></span>
+                            </div>
+                        </div>
+
+                        <!-- Motivational Quote with refined styling -->
+                        <div class="text-left flex-1 flex items-center justify-start mb-4">
+                            <div id="cardQuote" class="text-base font-medium text-gray-700 leading-relaxed italic relative pl-3">
+                                {{ motivational_quote }}
+                                <!-- Subtle quote accent -->
+                                <div class="absolute left-0 top-1 bottom-1 w-0.5 bg-gradient-to-b from-purple-400 to-pink-400 rounded-full opacity-40"></div>
+                            </div>
+                        </div>
+
+                        <!-- Stats Section - Streak Days and Completed Habits -->
+                        <div class="flex justify-between items-center pt-3 pb-2 border-t border-gray-200 mx-4">
+                            <div class="text-center">
+                                <div id="streakDays" class="text-lg font-bold text-purple-600">{{ streak_days }}</div>
+                                <div class="text-xs text-gray-500 font-medium mt-1">Days Strong</div>
+                                <input type="hidden" id="earliestCheckinDate" value="{{ earliest_checkin_date }}" />
+                            </div>
+                            <div class="text-center">
+                                <div id="completedHabits" class="text-lg font-bold text-green-600">{{ completed_today }}</div>
+                                <div class="text-xs text-gray-500 font-medium mt-1">Habits Today</div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Enhanced Controls -->
+        <div class="flex justify-center mb-8">
+            <div class="w-[500px] bg-white bg-opacity-80 backdrop-blur-sm rounded-2xl shadow-xl p-6 border border-gray-200">
+                <div class="flex justify-center space-x-6">
+                    <button id="refreshImage" class="group relative bg-gradient-to-r from-blue-500 to-blue-600 text-white px-6 py-3 rounded-xl hover:from-blue-600 hover:to-blue-700 transition-all duration-300 text-base font-semibold shadow-lg hover:shadow-xl transform hover:-translate-y-0.5">
+                        <div class="absolute inset-0 bg-white opacity-0 group-hover:opacity-10 rounded-xl transition-opacity duration-300"></div>
+                        <i class="fas fa-image mr-2"></i>
+                        <span class="relative">Refresh Image</span>
+                    </button>
+
+                    <button id="refreshQuote" class="group relative bg-gradient-to-r from-emerald-500 to-green-600 text-white px-6 py-3 rounded-xl hover:from-emerald-600 hover:to-green-700 transition-all duration-300 text-base font-semibold shadow-lg hover:shadow-xl transform hover:-translate-y-0.5">
+                        <div class="absolute inset-0 bg-white opacity-0 group-hover:opacity-10 rounded-xl transition-opacity duration-300"></div>
+                        <i class="fas fa-quote-right mr-2"></i>
+                        <span class="relative">New Quote</span>
+                    </button>
+                    <button id="selectDate" class="group relative bg-gradient-to-r from-indigo-500 to-purple-600 text-white px-6 py-3 rounded-xl hover:from-indigo-600 hover:to-purple-700 transition-all duration-300 text-base font-semibold shadow-lg hover:shadow-xl transform hover:-translate-y-0.5">
+                        <div class="absolute inset-0 bg-white opacity-0 group-hover:opacity-10 rounded-xl transition-opacity duration-300"></div>
+                        <i class="fas fa-calendar-alt mr-2"></i>
+                        <span class="relative">Select Date</span>
+                    </button>
+                </div>
+                    <!-- Inline date select dropdowns -->
+                    <div id="dateSelectPanel" class="mt-4 hidden">
+                        <div class="flex items-center justify-center space-x-2 text-sm">
+                            <select id="selectMonth" class="border rounded-lg px-2 py-1">
+                                <option value="0">Jan</option><option value="1">Feb</option><option value="2">Mar</option>
+                                <option value="3">Apr</option><option value="4">May</option><option value="5">Jun</option>
+                                <option value="6">Jul</option><option value="7">Aug</option><option value="8">Sep</option>
+                                <option value="9">Oct</option><option value="10">Nov</option><option value="11">Dec</option>
+                            </select>
+                            <select id="selectDay" class="border rounded-lg px-2 py-1"></select>
+                            <select id="selectYear" class="border rounded-lg px-2 py-1"></select>
+                            <button id="todayBtn" class="bg-gray-600 text-white px-3 py-1 rounded-lg hover:bg-gray-700">Today</button>
+                        </div>
+                    </div>
+            </div>
+        </div>
+
+        <!-- Enhanced Action Buttons -->
+        <div class="flex justify-center space-x-4">
+            <button id="saveCard" class="group relative bg-gradient-to-r from-purple-600 to-pink-600 text-white px-6 py-3 rounded-xl hover:from-purple-700 hover:to-pink-700 text-base font-semibold transition-all duration-300 shadow-lg hover:shadow-xl transform hover:scale-105 hover:-translate-y-0.5">
+                <div class="absolute inset-0 bg-white opacity-0 group-hover:opacity-10 rounded-xl transition-opacity duration-300"></div>
+                <i class="fas fa-download mr-2"></i>
+                <span class="relative">Save Card</span>
+            </button>
+
+            <a href="{{ url_for('home') }}" class="group relative bg-gradient-to-r from-gray-500 to-gray-600 text-white px-6 py-3 rounded-xl hover:from-gray-600 hover:to-gray-700 text-base font-semibold transition-all duration-300 shadow-lg hover:shadow-xl transform hover:scale-105 hover:-translate-y-0.5">
+                <div class="absolute inset-0 bg-white opacity-0 group-hover:opacity-10 rounded-xl transition-opacity duration-300"></div>
+                <i class="fas fa-arrow-left mr-2"></i>
+                <span class="relative">Back to Home</span>
+            </a>
+        </div>
+    </div>
+</div>
+
+<script>
+document.addEventListener('DOMContentLoaded', function() {
+    const cardBackground = document.getElementById('cardBackground');
+    const cardQuote = document.getElementById('cardQuote');
+    const refreshImageBtn = document.getElementById('refreshImage');
+    const refreshQuoteBtn = document.getElementById('refreshQuote');
+    const saveCardBtn = document.getElementById('saveCard');
+    const csrfMeta = document.querySelector('meta[name="csrf-token"]');
+    const csrfToken = csrfMeta ? csrfMeta.getAttribute('content') : '';
+    let currentImageUrl = ''; // updated when image loads successfully
+
+    // Format and display the date with abbreviated names
+    function formatDate() {
+        const today = new Date();
+        const monthNames = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
+                           'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+        const dayNames = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+
+        const month = monthNames[today.getMonth()];
+        const day = today.getDate();
+        const weekday = dayNames[today.getDay()];
+
+        document.getElementById('monthDay').textContent = `${month} ${day}`;
+        document.getElementById('weekday').textContent = weekday;
+    }
+
+    // Initialize date formatting
+    formatDate();
+
+    // Load initial image and quote with delay to ensure DOM is ready
+    setTimeout(() => {
+        loadNewImage();
+        loadNewQuote();
+    }, 100);
+
+    // Refresh image
+    refreshImageBtn.addEventListener('click', loadNewImage);
+
+    // Refresh quote
+    refreshQuoteBtn.addEventListener('click', loadNewQuote);
+
+    // Save card
+    saveCardBtn.addEventListener('click', saveCard);
+
+    function loadNewImage() {
+        const categories = ['nature', 'abstract', 'minimal', 'gradient', 'geometric'];
+        const category = categories[Math.floor(Math.random() * categories.length)];
+        console.log('Loading image for category:', category);
+
+        // Enhanced loading state
+        refreshImageBtn.disabled = true;
+        refreshImageBtn.innerHTML = '<i class="fas fa-magic fa-spin mr-2"></i>Creating Magic...';
+        refreshImageBtn.classList.add('shimmer');
+        cardBackground.style.opacity = '0.8';
+        cardBackground.style.transform = 'scale(0.99)';
+        cardBackground.style.filter = 'blur(1px)';
+
+        fetch(`/api/card/image/${category}`)
+        .then(response => {
+            console.log('Response status:', response.status);
+            return response.json();
+        })
+        .then(data => {
+            console.log('API response:', data);
+            if (data.success && data.image_url) {
+                console.log('Image URL received:', data.image_url);
+
+                // Create a new image object to preload
+                const img = new Image();
+                img.crossOrigin = 'anonymous';
+
+                img.onload = function() {
+                    console.log('Image loaded successfully:', data.image_url);
+                    currentImageUrl = data.image_url;
+                    cardBackground.style.backgroundImage = `url(${data.image_url})`;
+                    cardBackground.style.backgroundSize = 'cover';
+                    cardBackground.style.backgroundPosition = 'center';
+                    cardBackground.style.backgroundRepeat = 'no-repeat';
+                    cardBackground.style.opacity = '1';
+
+                    // Ensure overlay is visible for text readability
+                    const overlay = cardBackground.querySelector('.absolute.inset-0.bg-black.bg-opacity-20');
+                    if (overlay) {
+                        overlay.style.opacity = '0.2';
+                    }
+
+                    // Success state with animation
+                    refreshImageBtn.disabled = false;
+                    refreshImageBtn.innerHTML = '<i class="fas fa-check mr-2"></i>Image Loaded!';
+                    refreshImageBtn.classList.remove('shimmer');
+                    cardBackground.style.transform = 'scale(1)';
+                    cardBackground.style.filter = 'none';
+                    setTimeout(() => {
+                        refreshImageBtn.innerHTML = '<i class="fas fa-image mr-3"></i><span class="relative">Refresh Image</span>';
+                    }, 1500);
+                };
+
+                img.onerror = function() {
+                    console.error('Failed to load image:', data.image_url);
+                    // Fallback to a default gradient
+                    cardBackground.style.backgroundImage = 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)';
+                    cardBackground.style.opacity = '1';
+
+                    // Reset button
+                    refreshImageBtn.disabled = false;
+                    refreshImageBtn.innerHTML = '<i class="fas fa-sync-alt mr-2"></i>Refresh Image';
+                };
+
+                // Set a timeout to handle slow loading
+                setTimeout(() => {
+                    if (!img.complete) {
+                        console.log('Image loading timeout, using fallback');
+                        cardBackground.style.backgroundImage = 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)';
+                        cardBackground.style.opacity = '1';
+
+                        // Reset button
+                        refreshImageBtn.disabled = false;
+                        refreshImageBtn.innerHTML = '<i class="fas fa-sync-alt mr-2"></i>Refresh Image';
+                    }
+                }, 10000); // 10 second timeout
+
+                img.src = data.image_url;
+            } else {
+                console.error('API error or no image URL:', data);
+                // Fallback to a default gradient
+                cardBackground.style.backgroundImage = 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)';
+                cardBackground.style.opacity = '1';
+
+                // Reset button
+                refreshImageBtn.disabled = false;
+                refreshImageBtn.innerHTML = '<i class="fas fa-sync-alt mr-2"></i>Refresh Image';
+            }
+        })
+        .catch(error => {
+            console.error('Error loading image:', error);
+            // Fallback to a default gradient
+            cardBackground.style.backgroundImage = 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)';
+            cardBackground.style.opacity = '1';
+
+            // Reset button
+            refreshImageBtn.disabled = false;
+            refreshImageBtn.innerHTML = '<i class="fas fa-sync-alt mr-2"></i>Refresh Image';
+        });
+    }
+
+    function loadNewQuote() {
+        const categories = ['motivation', 'success', 'persistence', 'growth', 'daily'];
+        const category = categories[Math.floor(Math.random() * categories.length)];
+        console.log('Loading quote for category:', category);
+
+        fetch(`/api/card/quote/${category}`)
+        .then(response => {
+            console.log('Quote response status:', response.status);
+            return response.json();
+        })
+        .then(data => {
+            console.log('Quote API response:', data);
+            if (data.success) {
+                cardQuote.style.transition = 'opacity 0.3s ease-in-out';
+                cardQuote.style.opacity = '0';
+
+                setTimeout(() => {
+                    cardQuote.textContent = data.quote;
+                    cardQuote.style.opacity = '1';
+                }, 150);
+            } else {
+                console.error('Quote API error:', data.error);
+                // Fallback quote
+                cardQuote.textContent = "Every day is a new opportunity to be better.";
+            }
+        })
+        .catch(error => {
+            console.error('Error loading quote:', error);
+            // Fallback quote
+            cardQuote.textContent = "Every day is a new opportunity to be better.";
+        });
+    }
+
+    // Toggle inline date select panel
+    const selectDateBtnEl = document.getElementById('selectDate');
+    const datePanel = document.getElementById('dateSelectPanel');
+    const monthSel = document.getElementById('selectMonth');
+    const daySel = document.getElementById('selectDay');
+    const yearSel = document.getElementById('selectYear');
+
+    const todayBtn = document.getElementById('todayBtn');
+    if (selectDateBtnEl && datePanel && monthSel && daySel && yearSel) {
+        selectDateBtnEl.addEventListener('click', () => {
+            datePanel.classList.toggle('hidden');
+            if (!datePanel.classList.contains('hidden')) {
+                initDateSelectors();
+                // Immediately sync card date/weekday to selected dropdown values
+                applySelectedDateToCard();
+            }
+        });
+        // Update weekday/date on any change
+        monthSel.addEventListener('change', () => { renderDaysAndApply(); });
+        yearSel.addEventListener('change', () => { renderDaysAndApply(); });
+        daySel.addEventListener('change', () => { applySelectedDateToCard(); });
+
+        function renderDaysAndApply() {
+            // Re-render days for changed month/year, keep previous day if possible
+            const prev = parseInt(daySel.value || '1', 10);
+            const y = parseInt(yearSel.value, 10);
+            const m = parseInt(monthSel.value, 10);
+            const daysInMonth = new Date(y, m + 1, 0).getDate();
+            daySel.innerHTML = '';
+            for (let d = 1; d <= daysInMonth; d++) {
+                const opt = document.createElement('option');
+                opt.value = d;
+                opt.textContent = d;
+                daySel.appendChild(opt);
+            }
+            daySel.value = String(Math.min(prev, daysInMonth));
+            applySelectedDateToCard();
+        }
+
+        if (todayBtn) {
+            todayBtn.addEventListener('click', () => {
+                const now = new Date();
+                yearSel.value = String(now.getFullYear());
+                monthSel.value = String(now.getMonth());
+                const dim = new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate();
+                daySel.innerHTML = '';
+                for (let d = 1; d <= dim; d++) {
+                    const opt = document.createElement('option');
+                    opt.value = d;
+                    opt.textContent = d;
+                    daySel.appendChild(opt);
+                }
+                daySel.value = String(now.getDate());
+                applySelectedDateToCard();
+            });
+        }
+
+        function applySelectedDateToCard() {
+            const dt = new Date(parseInt(yearSel.value, 10), parseInt(monthSel.value, 10), parseInt(daySel.value, 10));
+            const month = new Intl.DateTimeFormat('en-US', { month: 'short' }).format(dt);
+            const day = String(dt.getDate()).padStart(2, '0');
+            const weekdayStr = new Intl.DateTimeFormat('en-US', { weekday: 'short' }).format(dt);
+            document.getElementById('monthDay').textContent = `${month} ${day}`;
+            document.getElementById('weekday').textContent = weekdayStr;
+            // Recompute Days Strong based on earliest check-in date -> selected date
+            const earliest = document.getElementById('earliestCheckinDate')?.value;
+            const streakEl = document.getElementById('streakDays');
+            if (earliest && streakEl) {
+                const e = new Date(earliest);
+                const diff = Math.floor((new Date(dt.getFullYear(), dt.getMonth(), dt.getDate()) - new Date(e.getFullYear(), e.getMonth(), e.getDate())) / 86400000) + 1;
+                streakEl.textContent = diff > 0 ? diff : 0;
+            }
+        }
+    }
+
+    function initDateSelectors() {
+        const today = new Date();
+        const curYear = today.getFullYear();
+        // Populate years: current year ± 1 range
+        yearSel.innerHTML = '';
+        for (let y = curYear - 1; y <= curYear + 1; y++) {
+            const opt = document.createElement('option');
+            opt.value = y;
+            opt.textContent = y;
+            if (y === curYear) opt.selected = true;
+            yearSel.appendChild(opt);
+        }
+        // Set current month/day
+        monthSel.value = String(today.getMonth());
+        renderDays();
+        daySel.value = String(today.getDate());
+        monthSel.onchange = renderDays;
+        yearSel.onchange = renderDays;
+
+        function renderDays() {
+            const y = parseInt(yearSel.value, 10);
+            const m = parseInt(monthSel.value, 10);
+            const daysInMonth = new Date(y, m + 1, 0).getDate();
+            const prevSelected = parseInt(daySel.value || '1', 10);
+            daySel.innerHTML = '';
+            for (let d = 1; d <= daysInMonth; d++) {
+                const opt = document.createElement('option');
+                opt.value = d;
+                opt.textContent = d;
+                daySel.appendChild(opt);
+            }
+            if (prevSelected <= daysInMonth) {
+                daySel.value = String(prevSelected);
+            } else {
+                daySel.value = String(daysInMonth);
+            }
+        }
+    }
+
+    // Helper: get selected date as YYYY-MM-DD (used by save and overwrite flows)
+    function getSelectedDateISO() {
+        const panel = document.getElementById('dateSelectPanel');
+        if (panel && !panel.classList.contains('hidden')) {
+            const yearSel = document.getElementById('selectYear');
+            const monthSel = document.getElementById('selectMonth');
+            const daySel = document.getElementById('selectDay');
+            if (yearSel && monthSel && daySel) {
+                const y = parseInt(yearSel.value, 10);
+                const m = parseInt(monthSel.value, 10);
+                const d = parseInt(daySel.value, 10);
+                const dt = new Date(y, m, d);
+                const yyyy = dt.getFullYear();
+                const mm = String(dt.getMonth() + 1).padStart(2, '0');
+                const dd = String(dt.getDate()).padStart(2, '0');
+                return `${yyyy}-${mm}-${dd}`;
+            }
+        }
+        // Fallback: parse from current displayed monthDay, assume current year (avoid UTC shift)
+        var mdEl = document.getElementById('monthDay');
+        var md = (mdEl && mdEl.textContent) ? mdEl.textContent.trim() : '';
+        var yr = (new Date()).getFullYear();
+        if (md) {
+            try {
+                var dt = new Date(md + ', ' + yr);
+                if (!isNaN(dt.getTime())) {
+                    var yyyy = dt.getFullYear();
+                    var mm = String(dt.getMonth() + 1).padStart(2, '0');
+                    var dd = String(dt.getDate()).padStart(2, '0');
+                    return yyyy + '-' + mm + '-' + dd;
+                }
+            } catch (e) {}
+        }
+        const now = new Date();
+        return `${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,'0')}-${String(now.getDate()).padStart(2,'0')}`;
+    }
+
+    async function saveCard() {
+        // Gather current card data from the UI
+        const imageCss = window.getComputedStyle(cardBackground).backgroundImage || '';
+        let imageUrl = (imageCss.startsWith('url(') ? imageCss.slice(4, -1).replace(/^"|"$/g, '') : '') || '';
+        if (!imageUrl && currentImageUrl) imageUrl = currentImageUrl;
+
+        const quoteText = (cardQuote && cardQuote.textContent) ? cardQuote.textContent.trim() : '';
+        const weekday = document.getElementById('weekday')?.textContent?.trim() || '';
+        const monthDay = document.getElementById('monthDay')?.textContent?.trim() || '';
+
+        // Directly attempt to save; backend will respond with reason='exists' if needed
+        saveCardBtn.disabled = true;
+        saveCardBtn.innerHTML = '<i class="fas fa-spinner fa-spin mr-2"></i>Saving...';
+        try {
+            await postSaveCard({ imageUrl, quoteText, weekday });
+        } catch (err) {
+            console.error('Save failed:', err);
+            alert('Failed to save card. Please try again.');
+            saveCardBtn.disabled = false;
+            saveCardBtn.innerHTML = '<i class="fas fa-download mr-2"></i>Save Card';
+        }
+    }
+
+    async function postSaveCard({ imageUrl, quoteText, weekday, overwrite=false }) {
+        const selectedDateISO = getSelectedDateISO();
+        // Safely try to capture the currently displayed image as bytes
+        let imageData = '';
+        try {
+            const bg = window.getComputedStyle(cardBackground).backgroundImage;
+            const match = bg && bg.match(/url\(["']?(.*?)["']?\)/);
+            const imgUrl = (match && match[1]) || imageUrl;
+            if (imgUrl && /^https?:/i.test(imgUrl)) {
+                const canvas = document.createElement('canvas');
+                // Match the card's top image aspect ratio (500x256 ~= 1.953), use higher resolution for quality
+                canvas.width = 1000; canvas.height = 512;
+                const ctx = canvas.getContext('2d');
+                await new Promise((resolve) => {
+                    const img = new Image();
+                    img.crossOrigin = 'anonymous';
+                    img.onload = () => {
+                        try {
+                            const iw = img.naturalWidth || img.width;
+                            const ih = img.naturalHeight || img.height;
+                            const tw = canvas.width, th = canvas.height;
+                            // object-fit: cover algorithm to avoid any stretching
+                            const scale = Math.max(tw / iw, th / ih);
+                            const dw = iw * scale;
+                            const dh = ih * scale;
+                            const dx = (tw - dw) / 2;
+                            const dy = (th - dh) / 2;
+                            ctx.drawImage(img, dx, dy, dw, dh);
+                        } catch(e) {}
+                        resolve();
+                    };
+                    img.onerror = () => resolve();
+                    img.src = imgUrl;
+                });
+                try { imageData = canvas.toDataURL('image/jpeg', 0.92); } catch(e) { imageData = ''; }
+            }
+        } catch (e) { imageData = ''; }
+        try {
+            // compute streak from earliest->selected date on the client to persist exact value
+            let computedStreak = parseInt(document.getElementById('streakDays')?.textContent || '0', 10) || 0;
+            const payload = {
+                image_url: imageUrl,
+                quote: quoteText,
+                weekday: weekday,
+                streak: computedStreak,
+                habits_completed: {{ completed_today }},
+                selected_date: selectedDateISO,
+                image_data: imageData,
+                overwrite: overwrite
+            };
+            const resp = await fetch('/api/card/save', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', 'X-CSRFToken': csrfToken },
+                body: JSON.stringify(payload)
+            });
+            const data = await resp.json();
+            if (data.success) {
+                saveCardBtn.innerHTML = '<i class="fas fa-check mr-2"></i>Saved';
+                setTimeout(() => {
+                    saveCardBtn.disabled = false;
+                    saveCardBtn.innerHTML = '<i class="fas fa-download mr-2"></i>Save Card';
+                }, 1500);
+            } else if (data.reason === 'exists') {
+                // Backend double-check; show modal
+                showOverwriteModal({ imageUrl, quoteText, weekday });
+            } else {
+                throw new Error(data.error || 'Unknown error');
+            }
+        } catch (err) {
+            console.error('Save failed:', err);
+            alert('Failed to save card. Please try again.');
+            saveCardBtn.disabled = false;
+            saveCardBtn.innerHTML = '<i class="fas fa-download mr-2"></i>Save Card';
+        }
+    }
+
+    // Overwrite confirmation modal (JS only, lightweight)
+    function showOverwriteModal(context) {
+        // Build a simple modal dynamically to avoid altering base templates
+        const overlay = document.createElement('div');
+        overlay.className = 'fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50';
+
+        const modal = document.createElement('div');
+        modal.className = 'bg-white rounded-2xl shadow-2xl p-6 max-w-md mx-4 text-center';
+        modal.innerHTML = `
+            <div class="w-16 h-16 bg-yellow-100 rounded-full flex items-center justify-center mx-auto mb-4">
+                <i class="fas fa-exclamation text-yellow-600 text-2xl"></i>
+            </div>
+            <h3 class="text-xl font-bold text-gray-800 mb-2">Card Exists</h3>
+            <p class="text-gray-600 mb-6">A card for today already exists. Do you want to overwrite it?</p>
+            <div class="flex space-x-4">
+                <button id="confirmOverwrite" class="flex-1 bg-blue-600 text-white px-4 py-2 rounded-lg hover:bg-blue-700 transition-all duration-300 font-semibold">Overwrite</button>
+                <button id="cancelOverwrite" class="flex-1 bg-gray-500 text-white px-4 py-2 rounded-lg hover:bg-gray-600 transition-all duration-300 font-semibold">Cancel</button>
+            </div>
+        `;
+
+        overlay.appendChild(modal);
+        document.body.appendChild(overlay);
+
+        document.getElementById('cancelOverwrite').onclick = () => {
+            document.body.removeChild(overlay);
+            saveCardBtn.disabled = false;
+            saveCardBtn.innerHTML = '<i class="fas fa-download mr-2"></i>Save Card';
+        };
+        document.getElementById('confirmOverwrite').onclick = async () => {
+            try {
+                await postSaveCard({ imageUrl: context.imageUrl, quoteText: context.quoteText, weekday: context.weekday, overwrite: true });
+            } finally {
+                document.body.removeChild(overlay);
+            }
+        };
+    }
+});
+</script>
+
+<!-- Include html2canvas for card generation -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
+<script>
+// Legacy modal date picker disabled. Using dropdown selectors below.
+
+function showDatePicker() {
+    const today = new Date();
+    let currentYear = today.getFullYear();
+    let currentMonth = today.getMonth(); // 0-11
+    let selectedDay = today.getDate();
+
+    const overlay = document.createElement('div');
+    overlay.className = 'fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50';
+
+    const modal = document.createElement('div');
+    modal.className = 'bg-white rounded-2xl shadow-2xl p-6 w-80';
+    modal.innerHTML = `
+        <div class="flex items-center justify-between mb-4">
+            <button id="dpPrev" class="w-8 h-8 rounded-full flex items-center justify-center bg-gray-100 hover:bg-gray-200"><i class="fas fa-chevron-left"></i></button>
+            <div id="dpTitle" class="text-lg font-semibold text-gray-800"></div>
+            <button id="dpNext" class="w-8 h-8 rounded-full flex items-center justify-center bg-gray-100 hover:bg-gray-200"><i class="fas fa-chevron-right"></i></button>
+        </div>
+        <div class="grid grid-cols-7 gap-2 text-center text-sm text-gray-600 mb-2">
+            <div>Su</div><div>Mo</div><div>Tu</div><div>We</div><div>Th</div><div>Fr</div><div>Sa</div>
+        </div>
+        <div id="dpGrid" class="grid grid-cols-7 gap-2 mb-4"></div>
+        <div class="flex space-x-3">
+            <button id="dpSelect" class="flex-1 bg-blue-600 text-white px-3 py-2 rounded-lg hover:bg-blue-700">Select</button>
+            <button id="dpCancel" class="flex-1 bg-gray-500 text-white px-3 py-2 rounded-lg hover:bg-gray-600">Cancel</button>
+        </div>
+    `;
+
+    overlay.appendChild(modal);
+    document.body.appendChild(overlay);
+
+    function render() {
+        const firstOfMonth = new Date(currentYear, currentMonth, 1);
+        const startWeekday = firstOfMonth.getDay();
+        const daysInMonth = new Date(currentYear, currentMonth + 1, 0).getDate();
+        const title = new Intl.DateTimeFormat('en-US', { month: 'long', year: 'numeric' }).format(firstOfMonth);
+        document.getElementById('dpTitle').textContent = title;
+        const grid = document.getElementById('dpGrid');
+        grid.innerHTML = '';
+        for (let i = 0; i < startWeekday; i++) {
+            const empty = document.createElement('div');
+            grid.appendChild(empty);
+        }
+        for (let d = 1; d <= daysInMonth; d++) {
+            const btn = document.createElement('button');
+            btn.textContent = d;
+            btn.className = 'py-1 rounded-lg hover:bg-indigo-100';
+            if (d === selectedDay && currentMonth === today.getMonth() && currentYear === today.getFullYear()) {
+                btn.className += ' bg-indigo-600 text-white hover:bg-indigo-700';
+            }
+            btn.addEventListener('click', () => {
+                selectedDay = d;
+                // Highlight selection
+                [...grid.querySelectorAll('button')].forEach(b => b.classList.remove('bg-indigo-600','text-white'));
+                btn.classList.add('bg-indigo-600','text-white');
+            });
+            grid.appendChild(btn);
+        }
+    }
+    render();
+
+    document.getElementById('dpPrev').onclick = () => { currentMonth -= 1; if (currentMonth < 0) { currentMonth = 11; currentYear -= 1; } render(); };
+    document.getElementById('dpNext').onclick = () => { currentMonth += 1; if (currentMonth > 11) { currentMonth = 0; currentYear += 1; } render(); };
+    document.getElementById('dpCancel').onclick = () => { document.body.removeChild(overlay); };
+    document.getElementById('dpSelect').onclick = () => {
+        const dt = new Date(currentYear, currentMonth, selectedDay);
+        // Update card date + weekday
+        const monthDayEl = document.getElementById('monthDay');
+        const weekdayEl = document.getElementById('weekday');
+        const month = new Intl.DateTimeFormat('en-US', { month: 'short' }).format(dt);
+        const day = dt.getDate().toString().padStart(2,'0');
+        const weekdayStr = new Intl.DateTimeFormat('en-US', { weekday: 'short' }).format(dt);
+        monthDayEl.textContent = `${month} ${day}`;
+        weekdayEl.textContent = weekdayStr;
+        document.body.removeChild(overlay);
+    };
+}
+</script>
+
+
+<script>
+    /* legacy popover calendar removed */ function showDatePicker() {
+        const today = new Date();
+        let currentYear = today.getFullYear();
+        let currentMonth = today.getMonth(); // 0-11
+        let selectedDay = today.getDate();
+
+        const overlay = document.createElement('div');
+        overlay.className = 'fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50';
+
+        const modal = document.createElement('div');
+        modal.className = 'bg-white rounded-2xl shadow-2xl p-6 w-80';
+        modal.innerHTML = `
+            <div class="flex items-center justify-between mb-4">
+                <button id="dpPrev" class="w-8 h-8 rounded-full flex items-center justify-center bg-gray-100 hover:bg-gray-200"><i class="fas fa-chevron-left"></i></button>
+                <div id="dpTitle" class="text-lg font-semibold text-gray-800"></div>
+                <button id="dpNext" class="w-8 h-8 rounded-full flex items-center justify-center bg-gray-100 hover:bg-gray-200"><i class="fas fa-chevron-right"></i></button>
+            </div>
+            <div class="grid grid-cols-7 gap-2 text-center text-sm text-gray-600 mb-2">
+                <div>Su</div><div>Mo</div><div>Tu</div><div>We</div><div>Th</div><div>Fr</div><div>Sa</div>
+            </div>
+            <div id="dpGrid" class="grid grid-cols-7 gap-2 mb-4"></div>
+            <div class="flex space-x-3">
+                <button id="dpSelect" class="flex-1 bg-blue-600 text-white px-3 py-2 rounded-lg hover:bg-blue-700">Select</button>
+                <button id="dpCancel" class="flex-1 bg-gray-500 text-white px-3 py-2 rounded-lg hover:bg-gray-600">Cancel</button>
+            </div>
+        `;
+
+        overlay.appendChild(modal);
+        document.body.appendChild(overlay);
+
+        function render() {
+            const firstOfMonth = new Date(currentYear, currentMonth, 1);
+            const startWeekday = firstOfMonth.getDay();
+            const daysInMonth = new Date(currentYear, currentMonth + 1, 0).getDate();
+            const title = new Intl.DateTimeFormat('en-US', { month: 'long', year: 'numeric' }).format(firstOfMonth);
+            document.getElementById('dpTitle').textContent = title;
+            const grid = document.getElementById('dpGrid');
+            grid.innerHTML = '';
+            for (let i = 0; i < startWeekday; i++) {
+                const empty = document.createElement('div');
+                grid.appendChild(empty);
+            }
+            for (let d = 1; d <= daysInMonth; d++) {
+                const btn = document.createElement('button');
+                btn.textContent = d;
+                btn.className = 'py-1 rounded-lg hover:bg-indigo-100';
+                if (d === selectedDay && currentMonth === today.getMonth() && currentYear === today.getFullYear()) {
+                    btn.className += ' bg-indigo-600 text-white hover:bg-indigo-700';
+                }
+                btn.addEventListener('click', () => {
+                    selectedDay = d;
+                    const selected = new Date(currentYear, currentMonth, selectedDay);
+                    // Highlight selection
+                    [...grid.querySelectorAll('button')].forEach(b => b.classList.remove('bg-indigo-600','text-white'));
+                    btn.classList.add('bg-indigo-600','text-white');
+                });
+                grid.appendChild(btn);
+            }
+        }
+        render();
+
+        document.getElementById('dpPrev').onclick = () => { currentMonth -= 1; if (currentMonth < 0) { currentMonth = 11; currentYear -= 1; } render(); };
+        document.getElementById('dpNext').onclick = () => { currentMonth += 1; if (currentMonth > 11) { currentMonth = 0; currentYear += 1; } render(); };
+        document.getElementById('dpCancel').onclick = () => { document.body.removeChild(overlay); };
+        document.getElementById('dpSelect').onclick = () => {
+            const dt = new Date(currentYear, currentMonth, selectedDay);
+            // Update card date + weekday
+            const monthDayEl = document.getElementById('monthDay');
+            const weekdayEl = document.getElementById('weekday');
+            const month = new Intl.DateTimeFormat('en-US', { month: 'short' }).format(dt);
+            const day = dt.getDate().toString().padStart(2,'0');
+            const weekdayStr = new Intl.DateTimeFormat('en-US', { weekday: 'short' }).format(dt);
+            monthDayEl.textContent = `${month} ${day}`;
+            weekdayEl.textContent = weekdayStr;
+            document.body.removeChild(overlay);
+        };
+</script>
+
+<!-- Custom Styles for Enhanced Beauty -->
+<style>
+    /* Smooth animations */
+    * {
+        transition: all 0.3s ease;
+    }
+
+    /* Enhanced gradient text support */
+    .bg-clip-text {
+        -webkit-background-clip: text;
+        background-clip: text;
+        -webkit-text-fill-color: transparent;
+    }
+
+    /* Backdrop blur support */
+    .backdrop-blur-sm {
+        backdrop-filter: blur(4px);
+        -webkit-backdrop-filter: blur(4px);
+    }
+
+    /* Custom shadow effects */
+    .shadow-xl {
+        box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.1), 0 10px 10px -5px rgba(0, 0, 0, 0.04);
+    }
+
+    .shadow-2xl {
+        box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.25);
+    }
+
+    /* Hover glow effects */
+    .hover\:shadow-2xl:hover {
+        box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.25), 0 0 30px rgba(147, 51, 234, 0.15);
+    }
+
+    /* Pulse animation for decorative elements */
+    @keyframes pulse {
+        0%, 100% {
+            opacity: 1;
+        }
+        50% {
+            opacity: 0.5;
+        }
+    }
+
+    .animate-pulse {
+        animation: pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+    }
+
+    /* Ping animation for sparkle effects */
+    @keyframes ping {
+        75%, 100% {
+            transform: scale(2);
+            opacity: 0;
+        }
+    }
+
+    .animate-ping {
+        animation: ping 1s cubic-bezier(0, 0, 0.2, 1) infinite;
+    }
+
+    /* Loading shimmer effect */
+    @keyframes shimmer {
+        0% {
+            background-position: -200% 0;
+        }
+        100% {
+            background-position: 200% 0;
+        }
+    }
+
+    .shimmer {
+        background: linear-gradient(90deg, transparent, rgba(255,255,255,0.2), transparent);
+        background-size: 200% 100%;
+        animation: shimmer 1.5s infinite;
+    }
+
+    /* Smooth focus states */
+    button:focus {
+        outline: none;
+        ring: 2px;
+        ring-color: rgba(147, 51, 234, 0.5);
+        ring-offset: 2px;
+    }
+
+    /* Enhanced card hover effects */
+    #cardPreview:hover {
+        transform: translateY(-2px) scale(1.02);
+    }
+
+    /* Subtle text shadows */
+    .drop-shadow-sm {
+        filter: drop-shadow(0 1px 1px rgba(0, 0, 0, 0.05));
+    }
+</style>
+
+{% endblock %}
+

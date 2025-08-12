@@ -1,0 +1,514 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="py-12 px-4 sm:px-6 lg:px-8" style="background-color: #FAEBD7;">
+    <div class="container mx-auto max-w-4xl">
+        <!-- Return Button -->
+        <div class="mb-6 flex justify-between items-center">
+            <a href="{{ url_for('my_habits') }}" class="inline-flex items-center bg-gradient-to-r from-blue-500 to-blue-600 text-white px-4 py-2 rounded-lg hover:from-blue-600 hover:to-blue-700 transition-all duration-300 shadow-md hover:shadow-lg transform hover:scale-105">
+                <i class="fas fa-arrow-left mr-2"></i>
+                Back to My Habits
+            </a>
+            <a href="{{ url_for('habit_edit', habit_id=habit.id) }}" class="ml-4 bg-yellow-500 text-white px-6 py-2 rounded-lg hover:bg-yellow-600 transition-all duration-300 shadow-md hover:shadow-lg transform hover:scale-105 font-semibold inline-flex items-center"><i class="fas fa-edit mr-2"></i>Edit</a>
+        </div>
+
+        <!-- Habit Info Card -->
+        <div class="bg-white rounded-xl shadow-lg p-8 mb-2">
+            <div class="flex items-center justify-center mb-6">
+                <i class="{{ habit.icon }} text-4xl text-blue-600 mr-4"></i>
+                <div class="text-center">
+                    <h1 class="text-3xl font-bold text-gray-800">{{ habit.habit_name }}</h1>
+                    <p class="text-gray-600 mt-1">Frequency: {{ habit.frequency or 'Not Set' }}</p>
+                    <p class="text-gray-600">Time Period: {{ habit.time_period or 'Not Set' }}</p>
+                </div>
+            </div>
+            
+            <!-- Statistical Data -->
+            <div class="grid grid-cols-1 md:grid-cols-3 gap-4 mb-2">
+                <div class="bg-blue-50 p-4 rounded-lg text-center">
+                    <div class="text-2xl font-bold text-blue-600">{{ habit.completed_count() }}</div>
+                    <div class="text-sm text-gray-600">Total Check-ins</div>
+                </div>
+                <div class="bg-green-50 p-4 rounded-lg text-center">
+                    <div class="text-2xl font-bold text-green-600">{{ current_month_count }}</div>
+                    <div class="text-sm text-gray-600">This Month</div>
+                </div>
+                <div class="bg-yellow-50 p-4 rounded-lg text-center">
+                    <div class="text-2xl font-bold text-yellow-600">{{ current_week_count }}</div>
+                    <div class="text-sm text-gray-600">This Week</div>
+                </div>
+            </div>
+
+            {% if habit.note %}
+            <div class="bg-gray-50 p-4 rounded-lg mb-6">
+                <h3 class="font-semibold text-gray-700 mb-2">Note:</h3>
+                <p class="text-gray-600">{{ habit.note }}</p>
+            </div>
+            {% endif %}
+        </div>
+
+        <!-- Check-in Calendar -->
+        <div class="bg-white rounded-xl shadow-lg p-8 mt-2">
+            <h2 class="text-2xl font-bold text-gray-800 mb-6">Check-in Calendar</h2>
+            
+            <!-- Change Month -->
+            <div class="flex justify-between items-center mb-6">
+                <button id="prevMonth" class="bg-gray-200 hover:bg-gray-300 px-4 py-2 rounded-lg">
+                    <i class="fas fa-chevron-left"></i>
+                </button>
+                <h3 id="currentMonth" class="text-xl font-semibold text-gray-700"></h3>
+                <button id="nextMonth" class="bg-gray-200 hover:bg-gray-300 px-4 py-2 rounded-lg">
+                    <i class="fas fa-chevron-right"></i>
+                </button>
+            </div>
+
+            <!-- Calendar -->
+            <div class="grid grid-cols-7 gap-1 mb-4">
+                <div class="text-center font-semibold text-gray-600 p-2">Sun</div>
+                <div class="text-center font-semibold text-gray-600 p-2">Mon</div>
+                <div class="text-center font-semibold text-gray-600 p-2">Tue</div>
+                <div class="text-center font-semibold text-gray-600 p-2">Wed</div>
+                <div class="text-center font-semibold text-gray-600 p-2">Thu</div>
+                <div class="text-center font-semibold text-gray-600 p-2">Fri</div>
+                <div class="text-center font-semibold text-gray-600 p-2">Sat</div>
+            </div>
+
+            <div id="calendarGrid" class="grid grid-cols-7 gap-1">
+
+            </div>
+        </div>
+
+        <!-- Annual Statistics -->
+        <div class="bg-white rounded-xl shadow-lg p-8 mt-2">
+            <div class="flex justify-between items-center">
+                <h2 class="text-2xl font-bold text-gray-800">Annual Statistics</h2>
+                <a href="{{ url_for('annual_statistics', habit_id=habit.id) }}" class="inline-flex items-center bg-gradient-to-r from-blue-500 to-blue-600 text-white px-4 py-2 rounded-lg hover:from-blue-600 hover:to-blue-700 transition-all duration-300 shadow-md hover:shadow-lg transform hover:scale-105">
+                    <span class="mr-2">View</span>
+                    <i class="fas fa-arrow-right"></i>
+                </a>
+            </div>
+        </div>
+
+        <!-- Check-in Logs -->
+        <div class="bg-white rounded-xl shadow-lg p-8 mt-2">
+            <div class="flex justify-between items-center">
+                <h2 class="text-2xl font-bold text-gray-800">Check-in Logs</h2>
+                <a href="{{ url_for('checkin_logs', habit_id=habit.id) }}" class="inline-flex items-center bg-gradient-to-r from-blue-500 to-blue-600 text-white px-4 py-2 rounded-lg hover:from-blue-600 hover:to-blue-700 transition-all duration-300 shadow-md hover:shadow-lg transform hover:scale-105">
+                    <i class="fas fa-list mr-2"></i>
+                    View all logs
+                </a>
+            </div>
+        </div>
+
+
+
+        <!-- Delete Button -->
+        <div class="mt-4 text-center">
+            <button id="deleteHabitBtn" class="bg-red-500 text-white px-6 py-2 rounded-lg hover:bg-red-600 transition-all duration-300 shadow-md hover:shadow-lg transform hover:scale-105 font-semibold inline-flex items-center mx-auto"><i class="fas fa-trash mr-2"></i>Delete Habit</button>
+        </div>
+    </div>
+</div>
+
+<!-- Delete Habit Confirmation -->
+<div id="deleteModal" class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 hidden">
+    <div class="bg-white rounded-2xl shadow-2xl p-8 max-w-md mx-4 transform transition-all duration-300 scale-95 opacity-0" id="modalContent">
+        <div class="text-center">
+            <div id="modalIcon" class="w-16 h-16 bg-red-100 rounded-full flex items-center justify-center mx-auto mb-4">
+                <i class="fas fa-exclamation-triangle text-red-600 text-2xl"></i>
+            </div>
+            <h3 class="text-xl font-bold text-gray-800 mb-2" id="modalTitle">Delete Habit</h3>
+            <p class="text-gray-600 mb-6" id="modalText">Deletion cannot be undone. Are you sure you want to delete this habit?</p>
+            <div class="flex space-x-4">
+                <button id="confirmDelete" class="flex-1 bg-red-600 text-white px-4 py-2 rounded-lg hover:bg-red-700 transition-all duration-300 font-semibold">Delete</button>
+                <button id="cancelDelete" class="flex-1 bg-gray-500 text-white px-4 py-2 rounded-lg hover:bg-gray-600 transition-all duration-300 font-semibold">Cancel</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Click on the date that was not checked-in to pop up the check-in window -->
+<div id="checkinModal" class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 hidden">
+    <div class="bg-white rounded-2xl shadow-2xl p-8 max-w-md mx-4 transform transition-all duration-300 scale-95 opacity-0" id="checkinModalContent">
+        <div class="text-center mb-6">
+            <h2 class="text-2xl font-bold text-gray-800 mb-2">Check-in Log</h2>
+            <p class="text-gray-600">Record your habit completion</p>
+        </div>
+        <form id="checkinForm" class="space-y-6">
+            <!-- Habit Info -->
+            <div class="flex items-center justify-center mb-4 p-4 bg-blue-50 rounded-lg">
+                <i id="checkinHabitIcon" class="text-2xl text-blue-600 mr-3"></i>
+                <h3 id="checkinHabitName" class="text-lg font-medium text-gray-700"></h3>
+            </div>
+            <!-- Select Check-in Time -->
+            <div class="flex justify-between items-center border-b pb-2 mb-4">
+                <label for="checkinTime" class="block text-sm font-semibold text-gray-700">Time</label>
+                <input type="time" id="checkinTime" name="time" required class="border rounded px-3 py-2 text-sm text-gray-800 text-center focus:ring-2 focus:ring-blue-500 focus:border-transparent">
+            </div>
+            <!-- Note -->
+            <div>
+                <label for="checkinNote" class="block text-sm font-semibold text-gray-700 mb-2">Note (Optional)</label>
+                <textarea id="checkinNote" name="note" rows="3" class="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all duration-300 resize-none" placeholder="Add a note about your habit completion..."></textarea>
+            </div>
+            <!-- Check In & Cancel Button -->
+            <div class="flex space-x-4 pt-6">
+                <button type="submit" class="flex-1 bg-green-600 text-white px-6 py-3 rounded-lg hover:bg-green-700 transition-all duration-300 shadow-md hover:shadow-lg transform hover:scale-105 font-semibold">
+                    <i class="fas fa-check mr-2"></i>
+                    Check In
+                </button>
+                <button type="button" id="cancelCheckinModal" class="flex-1 bg-gray-500 text-white px-6 py-3 rounded-lg hover:bg-gray-600 transition-all duration-300 shadow-md hover:shadow-lg transform hover:scale-105 font-semibold">
+                    <i class="fas fa-times mr-2"></i>
+                    Cancel
+                </button>
+            </div>
+        </form>
+    </div>
+</div>
+
+<script>
+document.addEventListener('DOMContentLoaded', function() {
+    let currentDate = new Date();
+    let currentYear = currentDate.getFullYear();
+    let currentMonth = currentDate.getMonth();
+
+    // Initialize Calendar
+    function initCalendar() {
+        updateCalendar();
+        updateMonthDisplay();
+    }
+
+    // Update Month Display
+    function updateMonthDisplay() {
+        const monthNames = ["January", "February", "March", "April", "May", "June",
+                           "July", "August", "September", "October", "November", "December"];
+        document.getElementById('currentMonth').textContent = `${monthNames[currentMonth]} ${currentYear}`;
+    }
+
+    // Update Calendar
+    function updateCalendar() {
+        const grid = document.getElementById('calendarGrid');
+        grid.innerHTML = '';
+
+        const firstDay = new Date(currentYear, currentMonth, 1);
+        const lastDay = new Date(currentYear, currentMonth + 1, 0);
+        const startDate = new Date(firstDay);
+        startDate.setDate(startDate.getDate() - firstDay.getDay());
+
+        // Obtain the Check-in Records for That Month
+        const checkinDates = {{ checkin_dates|tojson }};
+
+        for (let i = 0; i < 42; i++) {
+            const date = new Date(startDate);
+            date.setDate(startDate.getDate() + i);
+            
+            const dayElement = document.createElement('div');
+            dayElement.className = 'text-center p-2 min-h-[40px] flex items-center justify-center cursor-pointer transition-colors duration-200';
+            
+            // Fix Time Zone Issues
+            const year = date.getFullYear();
+            const month = String(date.getMonth() + 1).padStart(2, '0');
+            const day = String(date.getDate()).padStart(2, '0');
+            const dateString = `${year}-${month}-${day}`;
+            
+            const isCurrentMonth = date.getMonth() === currentMonth;
+            const isToday = date.toDateString() === new Date().toDateString();
+            const isCheckedIn = checkinDates.includes(dateString);
+
+            dayElement.textContent = date.getDate();
+
+            if (isCurrentMonth) {
+                dayElement.className += ' text-gray-800';
+                if (isCheckedIn) {
+                    dayElement.className += ' bg-blue-500 text-white';
+                }
+                // Today is Marked with a Red Border
+                if (isToday) {
+                    dayElement.className += ' font-bold border-2 border-red-500 rounded';
+                }
+            } else {
+                dayElement.className += ' text-gray-400';
+            }
+
+            // Hover Interaction
+            dayElement.addEventListener('mouseenter', function() {
+                if (!isCurrentMonth) return;
+                if (isCheckedIn) {
+                    this.classList.remove('bg-blue-500');
+                    this.classList.add('bg-red-500', 'text-white');
+                } else {
+                    this.classList.add('bg-blue-500', 'text-white');
+                }
+            });
+            dayElement.addEventListener('mouseleave', function() {
+                if (!isCurrentMonth) return;
+                if (isCheckedIn) {
+                    this.classList.remove('bg-red-500');
+                    this.classList.add('bg-blue-500', 'text-white');
+                } else {
+                    this.classList.remove('bg-blue-500', 'text-white');
+                }
+            });
+
+            // Click Interaction
+            dayElement.addEventListener('click', function() {
+                if (!isCurrentMonth) return;
+                if (isCheckedIn) {
+                    // Uncheck Confirmation
+                    showUncheckModal(dateString, dayElement);
+                } else {
+                    // Check-in Window
+                    window.showCheckinForDateReal(dateString, '{{ habit.icon }}', '{{ habit.habit_name }}');
+                }
+            });
+
+            grid.appendChild(dayElement);
+        }
+    }
+
+    // Month Navigation
+    document.getElementById('prevMonth').addEventListener('click', function() {
+        currentMonth--;
+        if (currentMonth < 0) {
+            currentMonth = 11;
+            currentYear--;
+        }
+        updateCalendar();
+        updateMonthDisplay();
+    });
+
+    document.getElementById('nextMonth').addEventListener('click', function() {
+        currentMonth++;
+        if (currentMonth > 11) {
+            currentMonth = 0;
+            currentYear++;
+        }
+        updateCalendar();
+        updateMonthDisplay();
+    });
+
+    // Check-in Form Window
+    const checkinModal = document.getElementById('checkinModal');
+    const checkinModalContent = document.getElementById('checkinModalContent');
+    const cancelCheckinModal = document.getElementById('cancelCheckinModal');
+    const checkinForm = document.getElementById('checkinForm');
+    const checkinHabitIcon = document.getElementById('checkinHabitIcon');
+    const checkinHabitName = document.getElementById('checkinHabitName');
+    const checkinTime = document.getElementById('checkinTime');
+    const checkinNote = document.getElementById('checkinNote');
+
+    // Initialization
+    initCalendar();
+
+    // Calendar Check-in
+    function showCheckinModal(dateString, dayElement) {
+        if (window.showCheckinForDate) {
+            window.showCheckinForDate(dateString, dayElement);
+            return;
+        }
+        // fallback: alert
+        alert('Check-in for ' + dateString);
+    }
+    // Calendar Uncheck
+    function showUncheckModal(dateString, dayElement) {
+        if (window.showUncheckForDate) {
+            window.showUncheckForDate(dateString, dayElement);
+            return;
+        }
+        // fallback: alert
+        alert('Uncheck for ' + dateString);
+    }
+
+
+
+    // General modal dialog logic
+    const deleteBtn = document.getElementById('deleteHabitBtn');
+    const deleteModal = document.getElementById('deleteModal');
+    const modalContent = document.getElementById('modalContent');
+    const confirmDelete = document.getElementById('confirmDelete');
+    const cancelDelete = document.getElementById('cancelDelete');
+    const modalTitle = document.getElementById('modalTitle');
+    const modalText = document.getElementById('modalText');
+    const modalIcon = document.getElementById('modalIcon');
+    let modalAction = null;
+    let modalActionData = null;
+
+    // Show modal dialog
+    function showModal(type, data) {
+        modalAction = type;
+        modalActionData = data;
+        // Default content
+        modalIcon.innerHTML = '<i class="fas fa-exclamation-triangle text-red-600 text-2xl"></i>';
+        modalIcon.className = 'w-16 h-16 bg-red-100 rounded-full flex items-center justify-center mx-auto mb-4';
+        confirmDelete.className = 'flex-1 bg-red-600 text-white px-4 py-2 rounded-lg hover:bg-red-700 transition-all duration-300 font-semibold';
+        confirmDelete.textContent = 'Delete';
+        modalTitle.textContent = 'Delete Habit';
+        modalText.textContent = 'Deletion cannot be undone. Are you sure you want to delete this habit?';
+        if (type === 'calendar-checkin') {
+            modalIcon.innerHTML = '<i class="fas fa-calendar-check text-blue-600 text-2xl"></i>';
+            modalIcon.className = 'w-16 h-16 bg-blue-100 rounded-full flex items-center justify-center mx-auto mb-4';
+            confirmDelete.className = 'flex-1 bg-blue-600 text-white px-4 py-2 rounded-lg hover:bg-blue-700 transition-all duration-300 font-semibold';
+            confirmDelete.textContent = 'Yes';
+            modalTitle.textContent = 'Check-in on ' + data.date;
+            modalText.textContent = 'Do you want to check in for this day?';
+        } else if (type === 'calendar-uncheck') {
+            modalIcon.innerHTML = '<i class="fas fa-calendar-times text-red-600 text-2xl"></i>';
+            modalIcon.className = 'w-16 h-16 bg-red-100 rounded-full flex items-center justify-center mx-auto mb-4';
+            confirmDelete.className = 'flex-1 bg-red-600 text-white px-4 py-2 rounded-lg hover:bg-red-700 transition-all duration-300 font-semibold';
+            confirmDelete.textContent = 'Yes';
+            modalTitle.textContent = 'Uncheck on ' + data.date;
+            modalText.textContent = 'Do you want to uncheck this day?';
+        }
+        deleteModal.classList.remove('hidden');
+        setTimeout(() => {
+            modalContent.classList.remove('scale-95', 'opacity-0');
+            modalContent.classList.add('scale-100', 'opacity-100');
+        }, 10);
+    }
+    function hideModal() {
+        modalContent.classList.remove('scale-100', 'opacity-100');
+        modalContent.classList.add('scale-95', 'opacity-0');
+        setTimeout(() => {
+            deleteModal.classList.add('hidden');
+        }, 300);
+    }
+    cancelDelete.addEventListener('click', hideModal);
+    deleteModal.addEventListener('click', function(e) {
+        if (e.target === deleteModal) hideModal();
+    });
+
+    // Delete Habit button
+    deleteBtn.addEventListener('click', function() {
+        showModal('delete-habit');
+    });
+    // Calendar click interaction mounting
+    window.showCheckinForDate = function(dateString, dayElement) {
+        // Pass icon and name parameters
+        showModal('calendar-checkin', {date: dateString, dayElement, icon: '{{ habit.icon }}', name: '{{ habit.habit_name }}'});
+    };
+    window.showUncheckForDate = function(dateString, dayElement) {
+        showModal('calendar-uncheck', {date: dateString, dayElement});
+    };
+    // Reuse Check-in modal logic, support specified date and habit icon/name
+    window.showCheckinForDateReal = function(dateString, icon, name) {
+        checkinHabitIcon.className = icon + ' text-2xl text-blue-600 mr-3';
+        checkinHabitName.textContent = name + ' (' + dateString + ')';
+        // Pre-fill time
+        const now = new Date();
+        checkinTime.value = now.toTimeString().slice(0, 5);
+        checkinNote.value = '';
+        checkinForm.setAttribute('data-calendar-date', dateString);
+        // Show modal
+        checkinModal.classList.remove('hidden');
+        setTimeout(() => {
+            checkinModalContent.classList.remove('scale-95', 'opacity-0');
+            checkinModalContent.classList.add('scale-100', 'opacity-100');
+        }, 10);
+    };
+    // Pass icon and name when calling in confirmDelete.onclick
+    confirmDelete.onclick = function() {
+        if (modalAction === 'delete-habit') {
+            fetch(`/habit/delete/{{ habit.id }}`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'X-CSRFToken': document.querySelector('meta[name="csrf-token"]').getAttribute('content')
+                }
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.success) {
+                    window.location.href = '{{ url_for("my_habits") }}';
+                } else {
+                    alert('Error deleting habit: ' + data.message);
+                }
+            });
+            hideModal();
+        } else if (modalAction === 'calendar-checkin') {
+            hideModal();
+            setTimeout(() => {
+                if (window.showCheckinForDateReal) {
+                    window.showCheckinForDateReal(modalActionData.date, modalActionData.icon, modalActionData.name);
+                } else {
+                    alert('Check-in for ' + modalActionData.date);
+                }
+            }, 350);
+        } else if (modalAction === 'calendar-uncheck') {
+            fetch(`/habit/uncheck_by_date/{{ habit.id }}`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'X-CSRFToken': document.querySelector('meta[name="csrf-token"]').getAttribute('content')
+                },
+                body: JSON.stringify({date: modalActionData.date})
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.success) {
+                    window.location.reload(); // 取消打卡后自动刷新页面
+                } else {
+                    alert('Error: ' + data.message);
+                }
+                hideModal();
+            })
+            .catch(() => { hideModal(); });
+        }
+    };
+
+    // Check-in form submission, support specified date
+    checkinForm.addEventListener('submit', function(e) {
+        if (checkinForm.hasAttribute('data-calendar-date')) {
+            e.preventDefault();
+            const dateString = checkinForm.getAttribute('data-calendar-date');
+            const data = Object.fromEntries(new FormData(this));
+            data.date = dateString;
+            fetch(`/habit/checkin_by_date/{{ habit.id }}`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'X-CSRFToken': document.querySelector('meta[name="csrf-token"]').getAttribute('content')
+                },
+                body: JSON.stringify(data)
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.success) {
+                    window.location.reload();
+                } else {
+                    alert('Error: ' + data.message);
+                }
+            })
+            .catch(() => { alert('An error occurred.'); });
+            return false;
+        }
+    });
+
+    // Calendar fill rounded corners
+    const style = document.createElement('style');
+    style.innerHTML = '.bg-blue-500, .bg-red-500 { border-radius: 0.5rem !important; }';
+    document.head.appendChild(style);
+
+    // Close modal
+    function hideCheckinModal() {
+        checkinModalContent.classList.remove('scale-100', 'opacity-100');
+        checkinModalContent.classList.add('scale-95', 'opacity-0');
+        setTimeout(() => {
+            checkinModal.classList.add('hidden');
+            checkinForm.reset();
+            // Reset time to current
+            const now = new Date();
+            checkinTime.value = now.toTimeString().slice(0, 5);
+        }, 300);
+    }
+    if (cancelCheckinModal) {
+        cancelCheckinModal.addEventListener('click', hideCheckinModal);
+    }
+    if (checkinModal) {
+        checkinModal.addEventListener('click', function(e) {
+            if (e.target === checkinModal) {
+                hideCheckinModal();
+            }
+        });
+    }
+});
+</script>
+{% endblock %}
+

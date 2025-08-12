@@ -1,0 +1,703 @@
+{% extends "base.html" %}
+
+{% block content %}
+
+{% if current_user.is_authenticated %}
+
+<div class="py-12 px-4 sm:px-6 lg:px-8" style="background-color: #FAEBD7;">
+    <!-- Greeting -->
+    <div id="greeting" class="mb-8 text-center -mt-8">
+        <h1 class="text-4xl font-extrabold text-gray-900 drop-shadow-sm"></h1>
+    </div>
+
+    <script>
+        const now = new Date();
+        const hour = now.getHours();
+        let greeting;
+        if (hour >= 4 && hour < 12) {
+            greeting = "Good morning";
+        } else if (hour >= 12 && hour < 18) {
+            greeting = "Good afternoon";
+        } else {
+            greeting = "Good evening";
+        }
+        const username = "{{ current_user.username }}";
+        document.getElementById("greeting").innerHTML = `<h1 class="text-4xl font-extrabold bg-gradient-to-r from-blue-600 to-green-600 bg-clip-text text-transparent drop-shadow-sm leading-tight py-1">${greeting}, ${username}!</h1>`;
+    </script>
+
+    <!-- New Todo, New Card and New Habit Buttons -->
+    <div class="flex justify-between mb-6">
+        <button id="newTodoBtn" class="bg-blue-500 text-white px-6 py-3 rounded-lg hover:bg-blue-600 text-lg font-semibold transition-all duration-300 shadow-md hover:shadow-lg transform hover:scale-105">
+            <i class="fas fa-plus mr-2"></i>
+            New To-do
+        </button>
+        <button id="newCardBtn" class="bg-purple-500 text-white px-6 py-3 rounded-lg hover:bg-purple-600 text-lg font-semibold transition-all duration-300 shadow-md hover:shadow-lg transform hover:scale-105">
+            <i class="fas fa-id-card mr-2"></i>
+            New Card
+        </button>
+        <button id="newHabitBtn" class="bg-[#3CB371] text-white px-6 py-3 rounded-lg hover:bg-green-600 text-lg font-semibold transition-all duration-300 shadow-md hover:shadow-lg transform hover:scale-105">
+            <i class="fas fa-plus mr-2"></i>
+            New Habit
+        </button>
+    </div>
+
+    <!-- Habit and Todo List -->
+    <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+        <!-- To-do List -->
+        <div>
+            <h3 class="text-2xl font-semibold text-gray-800 mb-4">To-do List</h3>
+            <div id="todo-list" class="grid grid-cols-1 gap-3">
+                {% for todo in today_todos %}
+                    <div class="todo-card shadow p-3 rounded-lg flex items-center justify-between border-2 border-gray-700 cursor-pointer transition-all duration-300 hover:shadow-lg {% if todo.completed %}opacity-75{% endif %}" style="background-color: #FFF5EE;" data-todo-id="{{ todo.id }}" data-completed="{{ todo.completed|lower }}">
+                        <div class="flex items-center flex-1">
+                            <div class="todo-checkbox w-5 h-5 border-2 rounded mr-3 flex items-center justify-center {% if todo.completed %}bg-green-500 border-green-500{% else %}border-gray-400{% endif %}">
+                                <i class="fas fa-check text-white text-xs {% if not todo.completed %}hidden{% endif %}"></i>
+                            </div>
+                            <div class="flex-1">
+                                <div class="text-sm {% if todo.completed %}line-through text-gray-400{% else %}text-gray-500{% endif %}">{{ todo.time }}</div>
+                                <div class="text-lg font-semibold {% if todo.completed %}line-through text-gray-400{% else %}text-gray-800{% endif %}">{{ todo.event }}</div>
+                            </div>
+                        </div>
+                    </div>
+                {% endfor %}
+                {% if not today_todos %}
+                    <div class="text-center text-gray-500 py-8">
+                        <i class="fas fa-clipboard-list text-4xl mb-4"></i>
+                        <p>No todos for today.</p>
+                        <p class="text-sm mt-2">Click "New To-do" to add one!</p>
+                    </div>
+                {% endif %}
+            </div>
+        </div>
+
+        <!-- Unchecked Habits -->
+        <div>
+            <h3 class="text-2xl font-semibold text-gray-800 mb-4">Unchecked Habits</h3>
+            <div id="unchecked-habits" class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                {% for habit in unchecked_habits %}
+                    <div class="shadow p-4 rounded-lg flex flex-col justify-between h-full border-2 border-gray-700" style="background-color: #FFF5EE;" data-habit-id="{{ habit.id }}">
+                        <h4 class="text-lg font-semibold flex items-center">
+                            <i class="{{ habit.icon }} mr-2"></i> {{ habit.habit_name }}
+                        </h4>
+                        <p class="text-sm text-gray-600">Frequency: {{ habit.frequency or 'Not Set' }}</p>
+                        <p class="text-sm text-gray-600">Time period: {{ habit.time_period or 'Not Set' }}</p>
+                        <button type="button" class="checkin-btn mt-2 bg-blue-600 hover:bg-blue-700 text-white py-1 px-4 rounded text-sm transition-all duration-300 transform hover:scale-105" data-habit-id="{{ habit.id }}" data-habit-name="{{ habit.habit_name }}" data-habit-icon="{{ habit.icon }}">
+                            <i class="fas fa-check mr-1"></i>Check-in
+                        </button>
+                    </div>
+                {% endfor %}
+            </div>
+        </div>
+    </div>
+</div>
+
+{% else %}
+
+<div class="bg-white p-8 rounded-xl shadow-lg text-center max-w-2xl mx-auto mt-24">
+  <h1 class="text-3xl font-bold mb-10 text-gray-800">Welcome to DailyDot！</h1>
+  <p class="text-xl text-gray-600 mb-6">DailyDot is a personal habit-forming software that helps you maintain healthy habits through a check-in system.</p>
+  <p class="text-xl text-gray-600 mb-20">Join us and start living a disciplined life!</p>
+
+  {% with messages = get_flashed_messages(with_categories=true) %}
+    {% if messages %}
+      {% for category, message in messages %}
+        <div class="mb-4 p-2 rounded {{ 'bg-green-100 text-green-700' if category == 'success' else 'bg-red-100 text-red-700' }}">
+          {{ message }}
+        </div>
+      {% endfor %}
+    {% endif %}
+  {% endwith %}
+
+  <div class="flex justify-center gap-4 mt-6">
+    <a href="{{ url_for('register') }}" class="bg-blue-500 text-white px-6 py-2 rounded hover:bg-blue-600 transition-all duration-300 shadow-md hover:shadow-lg transform hover:scale-105 font-semibold">Register</a>
+    <a href="{{ url_for('login') }}" class="bg-green-500 text-white px-6 py-2 rounded hover:bg-green-600 transition-all duration-300 shadow-md hover:shadow-lg transform hover:scale-105 font-semibold">Login</a>
+  </div>
+</div>
+
+{% endif %}
+
+<!-- Check-in Modal -->
+<div id="checkinModal" class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 hidden">
+    <div class="bg-white rounded-2xl shadow-2xl p-8 max-w-md mx-4 transform transition-all duration-300 scale-95 opacity-0" id="checkinModalContent">
+        <div class="text-center mb-6">
+            <h2 class="text-2xl font-bold text-gray-800 mb-2">Check-in Log</h2>
+            <p class="text-gray-600">Record your habit completion</p>
+        </div>
+
+        <form id="checkinForm" class="space-y-6">
+            <!-- Habit Info -->
+            <div class="flex items-center justify-center mb-4 p-4 bg-blue-50 rounded-lg">
+                <i id="checkinHabitIcon" class="text-2xl text-blue-600 mr-3"></i>
+                <h3 id="checkinHabitName" class="text-lg font-medium text-gray-700"></h3>
+            </div>
+
+            <!-- Time Selection -->
+            <div class="flex justify-between items-center border-b pb-2 mb-4">
+                <label for="checkinTime" class="block text-sm font-semibold text-gray-700">Time</label>
+                <input type="time" id="checkinTime" name="time" required
+                       class="border rounded px-3 py-2 text-sm text-gray-800 text-center focus:ring-2 focus:ring-blue-500 focus:border-transparent">
+            </div>
+
+            <!-- Note -->
+            <div>
+                <label for="checkinNote" class="block text-sm font-semibold text-gray-700 mb-2">Note (Optional)</label>
+                <textarea id="checkinNote" name="note" rows="3"
+                          class="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all duration-300 resize-none"
+                          placeholder="Add a note about your habit completion..."></textarea>
+            </div>
+
+            <!-- Buttons -->
+            <div class="flex space-x-4 pt-6">
+                <button type="submit" class="flex-1 bg-green-600 text-white px-6 py-3 rounded-lg hover:bg-green-700 transition-all duration-300 shadow-md hover:shadow-lg transform hover:scale-105 font-semibold">
+                    <i class="fas fa-check mr-2"></i>
+                    Check In
+                </button>
+                <button type="button" id="cancelCheckin" class="flex-1 bg-gray-500 text-white px-6 py-3 rounded-lg hover:bg-gray-600 transition-all duration-300 shadow-md hover:shadow-lg transform hover:scale-105 font-semibold">
+                    <i class="fas fa-times mr-2"></i>
+                    Cancel
+                </button>
+            </div>
+        </form>
+    </div>
+</div>
+
+<!-- New Habit Modal -->
+<div id="newHabitModal" class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 hidden">
+    <div class="bg-white rounded-2xl shadow-2xl p-8 max-w-2xl mx-4 max-h-[90vh] overflow-y-auto transform transition-all duration-300 scale-95 opacity-0" id="modalContent">
+        <div class="text-center mb-6">
+            <h2 class="text-3xl font-bold text-gray-800 mb-2">Create New Habit</h2>
+            <p class="text-gray-600">Add a new habit to your daily routine</p>
+        </div>
+
+        <form id="newHabitForm" class="space-y-6">
+            <!-- Habit Name -->
+            <div>
+                <label for="habitName" class="block text-sm font-semibold text-gray-700 mb-2">Habit Name</label>
+                <input type="text" id="habitName" name="habit_name" required
+                       class="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all duration-300">
+            </div>
+
+            <!-- Icon Selection -->
+            <div>
+                <label class="block text-sm font-semibold text-gray-700 mb-2">Icon</label>
+                <div class="grid grid-cols-4 gap-3">
+                    <label class="relative cursor-pointer">
+                        <input type="radio" name="icon" value="fas fa-sun" class="sr-only" checked>
+                        <div class="p-4 border-2 border-gray-200 rounded-lg text-center hover:border-blue-300 transition-all duration-300 icon-option">
+                            <i class="fas fa-sun text-2xl text-gray-600 mb-2"></i>
+                            <div class="text-xs text-gray-500">sun</div>
+                        </div>
+                    </label>
+                    <label class="relative cursor-pointer">
+                        <input type="radio" name="icon" value="fas fa-bed" class="sr-only">
+                        <div class="p-4 border-2 border-gray-200 rounded-lg text-center hover:border-blue-300 transition-all duration-300 icon-option">
+                            <i class="fas fa-bed text-2xl text-gray-600 mb-2"></i>
+                            <div class="text-xs text-gray-500">bed</div>
+                        </div>
+                    </label>
+                    <label class="relative cursor-pointer">
+                        <input type="radio" name="icon" value="fas fa-book" class="sr-only">
+                        <div class="p-4 border-2 border-gray-200 rounded-lg text-center hover:border-blue-300 transition-all duration-300 icon-option">
+                            <i class="fas fa-book text-2xl text-gray-600 mb-2"></i>
+                            <div class="text-xs text-gray-500">book</div>
+                        </div>
+                    </label>
+                    <label class="relative cursor-pointer">
+                        <input type="radio" name="icon" value="fas fa-music" class="sr-only">
+                        <div class="p-4 border-2 border-gray-200 rounded-lg text-center hover:border-blue-300 transition-all duration-300 icon-option">
+                            <i class="fas fa-music text-2xl text-gray-600 mb-2"></i>
+                            <div class="text-xs text-gray-500">music</div>
+                        </div>
+                    </label>
+                    <label class="relative cursor-pointer">
+                        <input type="radio" name="icon" value="fas fa-dumbbell" class="sr-only">
+                        <div class="p-4 border-2 border-gray-200 rounded-lg text-center hover:border-blue-300 transition-all duration-300 icon-option">
+                            <i class="fas fa-dumbbell text-2xl text-gray-600 mb-2"></i>
+                            <div class="text-xs text-gray-500">dumbbell</div>
+                        </div>
+                    </label>
+                    <label class="relative cursor-pointer">
+                        <input type="radio" name="icon" value="fas fa-coffee" class="sr-only">
+                        <div class="p-4 border-2 border-gray-200 rounded-lg text-center hover:border-blue-300 transition-all duration-300 icon-option">
+                            <i class="fas fa-coffee text-2xl text-gray-600 mb-2"></i>
+                            <div class="text-xs text-gray-500">coffee</div>
+                        </div>
+                    </label>
+                    <label class="relative cursor-pointer">
+                        <input type="radio" name="icon" value="fas fa-pen" class="sr-only">
+                        <div class="p-4 border-2 border-gray-200 rounded-lg text-center hover:border-blue-300 transition-all duration-300 icon-option">
+                            <i class="fas fa-pen text-2xl text-gray-600 mb-2"></i>
+                            <div class="text-xs text-gray-500">pen</div>
+                        </div>
+                    </label>
+                    <label class="relative cursor-pointer">
+                        <input type="radio" name="icon" value="fas fa-laptop" class="sr-only">
+                        <div class="p-4 border-2 border-gray-200 rounded-lg text-center hover:border-blue-300 transition-all duration-300 icon-option">
+                            <i class="fas fa-laptop text-2xl text-gray-600 mb-2"></i>
+                            <div class="text-xs text-gray-500">laptop</div>
+                        </div>
+                    </label>
+                    <label class="relative cursor-pointer">
+                        <input type="radio" name="icon" value="fas fa-heart" class="sr-only">
+                        <div class="p-4 border-2 border-gray-200 rounded-lg text-center hover:border-blue-300 transition-all duration-300 icon-option">
+                            <i class="fas fa-heart text-2xl text-gray-600 mb-2"></i>
+                            <div class="text-xs text-gray-500">heart</div>
+                        </div>
+                    </label>
+                    <label class="relative cursor-pointer">
+                        <input type="radio" name="icon" value="fas fa-running" class="sr-only">
+                        <div class="p-4 border-2 border-gray-200 rounded-lg text-center hover:border-blue-300 transition-all duration-300 icon-option">
+                            <i class="fas fa-running text-2xl text-gray-600 mb-2"></i>
+                            <div class="text-xs text-gray-500">running</div>
+                        </div>
+                    </label>
+                    <label class="relative cursor-pointer">
+                        <input type="radio" name="icon" value="fas fa-swimmer" class="sr-only">
+                        <div class="p-4 border-2 border-gray-200 rounded-lg text-center hover:border-blue-300 transition-all duration-300 icon-option">
+                            <i class="fas fa-swimmer text-2xl text-gray-600 mb-2"></i>
+                            <div class="text-xs text-gray-500">swimmer</div>
+                        </div>
+                    </label>
+                    <label class="relative cursor-pointer">
+                        <input type="radio" name="icon" value="fas fa-bicycle" class="sr-only">
+                        <div class="p-4 border-2 border-gray-200 rounded-lg text-center hover:border-blue-300 transition-all duration-300 icon-option">
+                            <i class="fas fa-bicycle text-2xl text-gray-600 mb-2"></i>
+                            <div class="text-xs text-gray-500">bicycle</div>
+                        </div>
+                    </label>
+                </div>
+            </div>
+
+            <!-- Frequency -->
+            <div>
+                <label for="frequency" class="block text-sm font-semibold text-gray-700 mb-2">Frequency</label>
+                <select id="frequency" name="frequency" required
+                        class="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all duration-300">
+                    <option value="">Select frequency</option>
+                    <option value="Once a week">Once a week</option>
+                    <option value="Twice a week">Twice a week</option>
+                    <option value="3 times a week">3 times a week</option>
+                    <option value="4 times a week">4 times a week</option>
+                    <option value="5 times a week">5 times a week</option>
+                    <option value="6 times a week">6 times a week</option>
+                    <option value="Every day this week">Every day this week</option>
+                </select>
+            </div>
+
+            <!-- Time Period -->
+            <div>
+                <label for="timePeriod" class="block text-sm font-semibold text-gray-700 mb-2">Time Period</label>
+                <select id="timePeriod" name="time_period" required
+                        class="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all duration-300">
+                    <option value="">Select time period</option>
+                    <option value="Any time">Any time</option>
+                    <option value="After waking up">After waking up</option>
+                    <option value="Morning">Morning</option>
+                    <option value="Noon">Noon</option>
+                    <option value="Afternoon">Afternoon</option>
+                    <option value="Evening">Evening</option>
+                    <option value="Before bedtime">Before bedtime</option>
+                </select>
+            </div>
+
+            <!-- Note -->
+            <div>
+                <label for="note" class="block text-sm font-semibold text-gray-700 mb-2">Note (Optional)</label>
+                <textarea id="note" name="note" rows="3"
+                          class="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all duration-300 resize-none"></textarea>
+            </div>
+
+            <!-- Buttons -->
+            <div class="flex space-x-4 pt-6">
+                <button type="submit" class="flex-1 bg-blue-600 text-white px-6 py-3 rounded-lg hover:bg-blue-700 transition-all duration-300 shadow-md hover:shadow-lg transform hover:scale-105 font-semibold">
+                    <i class="fas fa-plus mr-2"></i>
+                    Create Habit
+                </button>
+                <button type="button" id="cancelNewHabit" class="flex-1 bg-gray-500 text-white px-6 py-3 rounded-lg hover:bg-gray-600 transition-all duration-300 shadow-md hover:shadow-lg transform hover:scale-105 font-semibold">
+                    <i class="fas fa-times mr-2"></i>
+                    Cancel
+                </button>
+            </div>
+        </form>
+    </div>
+</div>
+
+<!-- New Todo Modal -->
+<div id="newTodoModal" class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 hidden">
+    <div class="bg-white rounded-2xl shadow-2xl p-8 max-w-md mx-4 transform transition-all duration-300 scale-95 opacity-0" id="newTodoModalContent">
+        <div class="text-center mb-6">
+            <h2 class="text-2xl font-bold text-gray-800 mb-2">Create New Todo</h2>
+            <p class="text-gray-600">Add a new task to your todo list</p>
+        </div>
+
+        <form id="newTodoForm" class="space-y-6">
+            <!-- Event Name -->
+            <div>
+                <label for="todoEvent" class="block text-sm font-semibold text-gray-700 mb-2">Event Name</label>
+                <input type="text" id="todoEvent" name="event" required
+                       class="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all duration-300"
+                       placeholder="Enter event name">
+            </div>
+
+            <!-- Date -->
+            <div>
+                <label for="todoDate" class="block text-sm font-semibold text-gray-700 mb-2">Date</label>
+                <input type="date" id="todoDate" name="date" required
+                       class="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all duration-300">
+            </div>
+
+            <!-- Time -->
+            <div>
+                <label for="todoTime" class="block text-sm font-semibold text-gray-700 mb-2">Time</label>
+                <input type="time" id="todoTime" name="time" required
+                       class="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all duration-300">
+            </div>
+
+            <!-- Note -->
+            <div>
+                <label for="todoNote" class="block text-sm font-semibold text-gray-700 mb-2">Note (Optional)</label>
+                <textarea id="todoNote" name="note" rows="3"
+                          class="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all duration-300 resize-none"
+                          placeholder="Add a note about this todo..."></textarea>
+            </div>
+
+            <!-- Buttons -->
+            <div class="flex space-x-4 pt-6">
+                <button type="submit" class="flex-1 bg-blue-600 text-white px-6 py-3 rounded-lg hover:bg-blue-700 transition-all duration-300 shadow-md hover:shadow-lg transform hover:scale-105 font-semibold">
+                    <i class="fas fa-plus mr-2"></i>
+                    Create Todo
+                </button>
+                <button type="button" id="cancelNewTodo" class="flex-1 bg-gray-500 text-white px-6 py-3 rounded-lg hover:bg-gray-600 transition-all duration-300 shadow-md hover:shadow-lg transform hover:scale-105 font-semibold">
+                    <i class="fas fa-times mr-2"></i>
+                    Cancel
+                </button>
+            </div>
+        </form>
+    </div>
+</div>
+
+<script>
+// Check-in Modal functionality
+document.addEventListener('DOMContentLoaded', function() {
+    const checkinModal = document.getElementById('checkinModal');
+    const checkinModalContent = document.getElementById('checkinModalContent');
+    const cancelCheckin = document.getElementById('cancelCheckin');
+    const checkinForm = document.getElementById('checkinForm');
+    const checkinHabitIcon = document.getElementById('checkinHabitIcon');
+    const checkinHabitName = document.getElementById('checkinHabitName');
+    const checkinTime = document.getElementById('checkinTime');
+
+    // Set current time as default
+    const now = new Date();
+    const currentTime = now.toTimeString().slice(0, 5);
+    checkinTime.value = currentTime;
+
+    // Show check-in modal
+    document.querySelectorAll('.checkin-btn').forEach(btn => {
+        btn.addEventListener('click', function() {
+            const habitId = this.getAttribute('data-habit-id');
+            const habitName = this.getAttribute('data-habit-name');
+            const habitIcon = this.getAttribute('data-habit-icon');
+            
+            // Update modal content
+            checkinHabitIcon.className = habitIcon + ' text-2xl text-blue-600 mr-3';
+            checkinHabitName.textContent = habitName;
+            checkinForm.setAttribute('data-habit-id', habitId);
+            
+            // Show modal
+            checkinModal.classList.remove('hidden');
+            setTimeout(() => {
+                checkinModalContent.classList.remove('scale-95', 'opacity-0');
+                checkinModalContent.classList.add('scale-100', 'opacity-100');
+            }, 10);
+        });
+    });
+
+    // Hide check-in modal
+    function hideCheckinModal() {
+        checkinModalContent.classList.remove('scale-100', 'opacity-100');
+        checkinModalContent.classList.add('scale-95', 'opacity-0');
+        setTimeout(() => {
+            checkinModal.classList.add('hidden');
+            // Reset form
+            checkinForm.reset();
+            checkinTime.value = currentTime;
+        }, 300);
+    }
+
+    // Cancel button
+    cancelCheckin.addEventListener('click', hideCheckinModal);
+
+    // Click outside to close
+    checkinModal.addEventListener('click', function(e) {
+        if (e.target === checkinModal) {
+            hideCheckinModal();
+        }
+    });
+
+    // Check-in form submission
+    checkinForm.addEventListener('submit', function(e) {
+        e.preventDefault();
+        
+        const habitId = this.getAttribute('data-habit-id');
+        const formData = new FormData(this);
+        const data = Object.fromEntries(formData);
+        
+        // Send request
+        fetch(`/check_in/${habitId}`, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'X-CSRFToken': document.querySelector('meta[name="csrf-token"]').getAttribute('content')
+            },
+            body: JSON.stringify(data)
+        })
+        .then(response => response.json())
+        .then(data => {
+            if (data.success) {
+                // Success - reload page to show updated status
+                window.location.reload();
+            } else {
+                // Show error
+                alert('Error checking in: ' + data.message);
+            }
+        })
+        .catch(error => {
+            console.error('Error:', error);
+            alert('An error occurred while checking in.');
+        });
+    });
+
+    // New Card Button functionality
+    const newCardBtn = document.getElementById('newCardBtn');
+    newCardBtn.addEventListener('click', function() {
+        window.location.href = "{{ url_for('new_card') }}";
+    });
+
+    // New Habit Modal functionality
+    const newHabitBtn = document.getElementById('newHabitBtn');
+    const newHabitModal = document.getElementById('newHabitModal');
+    const modalContent = document.getElementById('modalContent');
+    const cancelNewHabit = document.getElementById('cancelNewHabit');
+    const newHabitForm = document.getElementById('newHabitForm');
+
+    // Show modal
+    newHabitBtn.addEventListener('click', function() {
+        newHabitModal.classList.remove('hidden');
+        setTimeout(() => {
+            modalContent.classList.remove('scale-95', 'opacity-0');
+            modalContent.classList.add('scale-100', 'opacity-100');
+        }, 10);
+    });
+
+    // Hide modal
+    function hideNewHabitModal() {
+        modalContent.classList.remove('scale-100', 'opacity-100');
+        modalContent.classList.add('scale-95', 'opacity-0');
+        setTimeout(() => {
+            newHabitModal.classList.add('hidden');
+            // Reset form
+            newHabitForm.reset();
+            // Reset icon selection
+            document.querySelectorAll('.icon-option').forEach(option => {
+                option.classList.remove('border-blue-500', 'bg-blue-50');
+            });
+            document.querySelector('input[name="icon"]').checked = true;
+            document.querySelector('input[name="icon"]').closest('label').querySelector('.icon-option').classList.add('border-blue-500', 'bg-blue-50');
+        }, 300);
+    }
+
+    // Cancel button
+    cancelNewHabit.addEventListener('click', hideNewHabitModal);
+
+    // Click outside to close
+    newHabitModal.addEventListener('click', function(e) {
+        if (e.target === newHabitModal) {
+            hideNewHabitModal();
+        }
+    });
+
+    // Icon selection
+    document.querySelectorAll('input[name="icon"]').forEach(input => {
+        input.addEventListener('change', function() {
+            // Remove all selected states
+            document.querySelectorAll('.icon-option').forEach(option => {
+                option.classList.remove('border-blue-500', 'bg-blue-50');
+            });
+            
+            // Add selected state
+            if (this.checked) {
+                this.closest('label').querySelector('.icon-option').classList.add('border-blue-500', 'bg-blue-50');
+            }
+        });
+    });
+
+    // Form submission
+    newHabitForm.addEventListener('submit', function(e) {
+        e.preventDefault();
+        
+        const formData = new FormData(this);
+        const data = Object.fromEntries(formData);
+        
+        // Send request
+        fetch('{{ url_for("new_habit") }}', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'X-CSRFToken': document.querySelector('meta[name="csrf-token"]').getAttribute('content')
+            },
+            body: JSON.stringify(data)
+        })
+        .then(response => response.json())
+        .then(data => {
+            if (data.success) {
+                // Success - reload page to show new habit
+                window.location.reload();
+            } else {
+                // Show error
+                alert('Error creating habit: ' + data.message);
+            }
+        })
+        .catch(error => {
+            console.error('Error:', error);
+            alert('An error occurred while creating the habit.');
+        });
+    });
+
+    // New Todo Modal functionality
+    const newTodoBtn = document.getElementById('newTodoBtn');
+    const newTodoModal = document.getElementById('newTodoModal');
+    const newTodoModalContent = document.getElementById('newTodoModalContent');
+    const cancelNewTodo = document.getElementById('cancelNewTodo');
+    const newTodoForm = document.getElementById('newTodoForm');
+
+    // Set today's date as default
+    const today = new Date().toISOString().split('T')[0];
+    document.getElementById('todoDate').value = today;
+
+    // Show modal
+    newTodoBtn.addEventListener('click', function() {
+        newTodoModal.classList.remove('hidden');
+        setTimeout(() => {
+            newTodoModalContent.classList.remove('scale-95', 'opacity-0');
+            newTodoModalContent.classList.add('scale-100', 'opacity-100');
+        }, 10);
+    });
+
+    // Hide modal
+    function hideNewTodoModal() {
+        newTodoModalContent.classList.remove('scale-100', 'opacity-100');
+        newTodoModalContent.classList.add('scale-95', 'opacity-0');
+        setTimeout(() => {
+            newTodoModal.classList.add('hidden');
+            // Reset form
+            newTodoForm.reset();
+            document.getElementById('todoDate').value = today;
+        }, 300);
+    }
+
+    // Cancel button
+    cancelNewTodo.addEventListener('click', hideNewTodoModal);
+
+    // Click outside to close
+    newTodoModal.addEventListener('click', function(e) {
+        if (e.target === newTodoModal) {
+            hideNewTodoModal();
+        }
+    });
+
+    // Form submission
+    newTodoForm.addEventListener('submit', function(e) {
+        e.preventDefault();
+        
+        const formData = new FormData(this);
+        const data = Object.fromEntries(formData);
+        
+        // Convert date format from YYYY-MM-DD to DD/MM/YYYY
+        const dateParts = data.date.split('-');
+        data.date = `${dateParts[2]}/${dateParts[1]}/${dateParts[0]}`;
+        
+        // Send request
+        fetch('{{ url_for("new_todo") }}', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'X-CSRFToken': document.querySelector('meta[name="csrf-token"]').getAttribute('content')
+            },
+            body: JSON.stringify(data)
+        })
+        .then(response => response.json())
+        .then(data => {
+            if (data.success) {
+                // Success - reload page to show new todo
+                window.location.reload();
+            } else {
+                // Show error
+                alert('Error creating todo: ' + data.message);
+            }
+        })
+        .catch(error => {
+            console.error('Error:', error);
+            alert('An error occurred while creating the todo.');
+        });
+    });
+
+    // Todo completion functionality
+    document.querySelectorAll('.todo-card').forEach(card => {
+        card.addEventListener('click', function() {
+            const todoId = this.getAttribute('data-todo-id');
+            const checkbox = this.querySelector('.todo-checkbox');
+            const checkIcon = this.querySelector('.todo-checkbox i');
+            const timeElement = this.querySelector('.text-sm');
+            const eventElement = this.querySelector('.text-lg.font-semibold');
+            const isCompleted = this.getAttribute('data-completed') === 'true';
+            
+            // Send completion request
+            fetch(`/todo/complete/${todoId}`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'X-CSRFToken': document.querySelector('meta[name="csrf-token"]').getAttribute('content')
+                }
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.success) {
+                    // Toggle completion state
+                    if (isCompleted) {
+                        // Mark as incomplete
+                        checkbox.classList.remove('bg-green-500', 'border-green-500');
+                        checkbox.classList.add('border-gray-400');
+                        checkIcon.classList.add('hidden');
+                        timeElement.classList.remove('line-through', 'text-gray-400');
+                        timeElement.classList.add('text-gray-500');
+                        eventElement.classList.remove('line-through', 'text-gray-400');
+                        eventElement.classList.add('text-gray-800');
+                        this.classList.remove('opacity-75');
+                        this.setAttribute('data-completed', 'false');
+                    } else {
+                        // Mark as completed
+                        checkbox.classList.add('bg-green-500', 'border-green-500');
+                        checkbox.classList.remove('border-gray-400');
+                        checkIcon.classList.remove('hidden');
+                        timeElement.classList.add('line-through', 'text-gray-400');
+                        timeElement.classList.remove('text-gray-500');
+                        eventElement.classList.add('line-through', 'text-gray-400');
+                        eventElement.classList.remove('text-gray-800');
+                        this.classList.add('opacity-75');
+                        this.setAttribute('data-completed', 'true');
+                    }
+                } else {
+                    alert('Error updating todo: ' + data.message);
+                }
+            })
+            .catch(error => {
+                console.error('Error:', error);
+                alert('An error occurred while updating the todo.');
+            });
+        });
+    });
+});
+</script>
+
+{% endblock %}

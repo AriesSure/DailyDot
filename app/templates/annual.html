@@ -1,0 +1,117 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="py-12 px-4 sm:px-6 lg:px-8" style="background-color: #FAEBD7;">
+    <div class="container mx-auto max-w-6xl">
+        <!-- Header -->
+        <div class="mb-8">
+            <div class="flex justify-between items-center mb-6">
+                <h1 class="text-3xl font-bold text-gray-800">Annual Statistics</h1>
+                <a href="{{ url_for('habit_view', habit_id=habit.id) }}" class="inline-flex items-center bg-blue-500 text-white px-4 py-2 rounded-lg hover:bg-blue-600 transition-all duration-300 shadow-md hover:shadow-lg transform hover:scale-105">
+                    <i class="fas fa-arrow-left mr-2"></i>
+                    Back to Habit
+                </a>
+            </div>
+        </div>
+
+        <!-- Habit Info -->
+        <div class="bg-white rounded-xl shadow-lg p-8 mb-8">
+            <div class="flex items-center justify-center mb-6">
+                <i class="{{ habit.icon }} text-4xl text-blue-600 mr-4"></i>
+                <div class="text-center">
+                    <h2 class="text-3xl font-bold text-gray-800">{{ habit.habit_name }}</h2>
+                    <p class="text-gray-600 mt-1">Frequency: {{ habit.frequency or 'Not Set' }}</p>
+                    <p class="text-gray-600">Time Period: {{ habit.time_period or 'Not Set' }}</p>
+                </div>
+            </div>
+        </div>
+
+        <!-- Year Navigation -->
+        <div class="bg-white rounded-xl shadow-lg p-8 mb-8">
+            <div class="flex justify-between items-center mb-6">
+                <button id="prevYear" class="bg-gray-200 hover:bg-gray-300 px-4 py-2 rounded-lg transition-colors duration-200">
+                    <i class="fas fa-chevron-left"></i>
+                </button>
+                <h3 id="currentYear" class="text-2xl font-semibold text-gray-700">{{ current_year }}</h3>
+                <button id="nextYear" class="bg-gray-200 hover:bg-gray-300 px-4 py-2 rounded-lg transition-colors duration-200">
+                    <i class="fas fa-chevron-right"></i>
+                </button>
+            </div>
+
+            <!-- Compact Annual Calendar -->
+            <div class="overflow-x-auto">
+                <div class="min-w-max">
+                    <!-- Day numbers header -->
+                    <div class="flex mb-3">
+                        <div class="w-24 font-semibold text-gray-700 text-sm">Month</div>
+                        {% for day in range(1, 32) %}
+                        <div class="w-6 h-6 flex items-center justify-center text-xs text-gray-500 font-medium mx-px">
+                            {{ day }}
+                        </div>
+                        {% endfor %}
+                    </div>
+
+                    <!-- Monthly rows -->
+                    {% for month_data in monthly_data %}
+                    <div class="flex items-center mb-2">
+                        <!-- Month name -->
+                        <div class="w-24 font-medium text-gray-800 text-sm pr-2">
+                            {{ month_data.month_name[:3] }}
+                        </div>
+                        
+                        <!-- Day squares -->
+                        {% for day in range(1, 32) %}
+                        {% if day <= month_data.days_in_month %}
+                            {% set is_checked_in = month_data.daily_status[day - 1] %}
+                            <div class="w-6 h-6 mx-px rounded-sm {% if is_checked_in %}bg-blue-400{% else %}bg-gray-200{% endif %} border border-gray-300"></div>
+                        {% else %}
+                            <div class="w-6 h-6 mx-px"></div>
+                        {% endif %}
+                        {% endfor %}
+                    </div>
+                    {% endfor %}
+                </div>
+            </div>
+
+            <!-- Legend -->
+            <div class="mt-6 flex items-center justify-center space-x-6 text-sm">
+                <div class="flex items-center">
+                    <div class="w-6 h-6 bg-blue-400 rounded-sm mr-2 border border-gray-300"></div>
+                    <span class="text-gray-700">Checked in</span>
+                </div>
+                <div class="flex items-center">
+                    <div class="w-6 h-6 bg-gray-200 rounded-sm mr-2 border border-gray-300"></div>
+                    <span class="text-gray-700">Not checked in</span>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+document.addEventListener('DOMContentLoaded', function() {
+    const prevYearBtn = document.getElementById('prevYear');
+    const nextYearBtn = document.getElementById('nextYear');
+    const currentYearSpan = document.getElementById('currentYear');
+    let currentYear = {{ current_year }};
+
+    // Year navigation
+    prevYearBtn.addEventListener('click', function() {
+        currentYear--;
+        updateYear();
+    });
+
+    nextYearBtn.addEventListener('click', function() {
+        currentYear++;
+        updateYear();
+    });
+
+    function updateYear() {
+        // Update the URL with the new year
+        const url = new URL(window.location);
+        url.searchParams.set('year', currentYear);
+        window.location.href = url.toString();
+    }
+});
+</script>
+{% endblock %} 
