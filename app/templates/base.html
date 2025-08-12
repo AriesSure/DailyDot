@@ -1,0 +1,105 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="csrf-token" content="{{ csrf_token() }}">
+  <title>{{ title }}</title>
+
+  <!-- Tailwind CSS -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css">
+
+  <!-- Google Fonts -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Dancing+Script:wght@400;700&family=Playfair+Display:wght@400;700&display=swap" rel="stylesheet">
+
+
+  <!-- Style -->
+  <style>
+    input[type="time"]::-webkit-calendar-picker-indicator {
+      display: none;
+      -webkit-appearance: none;
+    }
+  </style>
+
+      <!-- Tailwind utilities via CDN: custom utility using @apply -->
+      <style type="text/tailwindcss">
+        .card-cover {
+          @apply bg-cover bg-center bg-no-repeat;
+          aspect-ratio: 16 / 9;
+        }
+      </style>
+</head>
+
+<body class="text-gray-800 min-h-screen flex flex-col" style="background-color: #FAEBD7;">
+
+  <!-- Navbar -->
+  <nav class="bg-transparent text-gray-800 relative">
+    <div class="container mx-auto flex justify-between items-center py-4 px-4 md:px-6">
+      <!-- Logo -->
+      <div class="flex items-center space-x-2">
+        <i class="fas fa-check-circle text-blue-500 text-2xl"></i>
+        <span class="text-xl md:text-2xl font-black tracking-wide text-gray-800" style="font-family: 'Dancing Script', cursive; letter-spacing: 0.1em; font-weight: 900; text-shadow: 1px 1px 2px rgba(0,0,0,0.1);">DailyDot</span>
+      </div>
+
+      <!-- Menu -->
+      <div class="flex items-center text-xl md:text-2xl font-black">
+        {% if current_user.is_authenticated %}
+          <div class="flex space-x-16 mr-16">
+            <a href="{{ url_for('home') }}" class="hover:text-blue-600 transition-colors text-gray-700" style="font-family: 'Dancing Script', cursive; letter-spacing: 0.1em; font-weight: 900; text-shadow: 1px 1px 2px rgba(0,0,0,0.1);">Home</a>
+            <a href="{{ url_for('my_habits') }}" class="hover:text-blue-600 transition-colors text-gray-700" style="font-family: 'Dancing Script', cursive; letter-spacing: 0.1em; font-weight: 900; text-shadow: 1px 1px 2px rgba(0,0,0,0.1);">MyHabits</a>
+          </div>
+          <a href="{{ url_for('account') }}" class="hover:text-blue-600 transition-colors text-gray-700" style="font-family: 'Dancing Script', cursive; letter-spacing: 0.1em; font-weight: 900; text-shadow: 1px 1px 2px rgba(0,0,0,0.1);">Account</a>
+        {% endif %}
+      </div>
+    </div>
+
+    <!-- Bottom Edge -->
+    <div class="absolute bottom-0 left-0 right-0">
+      <div class="container mx-auto px-4 sm:px-6 lg:px-8">
+        <div class="border-b-4 border-gray-700"></div>
+      </div>
+    </div>
+  </nav>
+
+
+  <!-- Flash messages -->
+  {% with messages = get_flashed_messages(with_categories=true) %}
+    {% if messages %}
+      <div id="flash-message" class="fixed top-[76px] left-1/2 transform -translate-x-1/2 z-50">
+        {% for category, message in messages %}
+          <div class="mb-2 px-4 py-2 rounded text-white shadow-lg bg-{{ 'green' if category == 'success' else 'red' }}-500">
+            {{ message }}
+          </div>
+        {% endfor %}
+      </div>
+      <script>
+        setTimeout(function() {
+          var flash = document.getElementById('flash-message');
+          if (flash) {
+            flash.style.display = 'none';
+          }
+        }, 3000);
+      </script>
+    {% endif %}
+  {% endwith %}
+
+  <!-- Main content -->
+  <main class="container mx-auto flex-grow px-4 mt-4">
+    {% block content %}{% endblock %}
+  </main>
+
+  <!-- Footer -->
+  <footer class="relative mt-auto pt-8 pb-4 text-center text-gray-500" style="background-color: #FAEBD7;">
+    <div class="absolute top-0 left-0 right-0">
+      <div class="container mx-auto px-4 sm:px-6 lg:px-8">
+        <div class="border-t-4 border-gray-700"></div>
+      </div>
+    </div>
+    &copy; {{ "2025" }} DailyDot
+  </footer>
+
+</body>
+</html>

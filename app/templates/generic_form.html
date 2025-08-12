@@ -1,0 +1,44 @@
+{% extends "base.html" %}
+{% import "bootstrap_wtf.html" as wtf %}
+
+{% block content %}
+<div class="flex justify-center items-center min-h-[60vh]">
+  <div class="bg-white rounded-xl shadow-lg p-8 max-w-md w-full mx-auto">
+    <h1 class="text-2xl font-bold text-center mb-6 text-gray-800">{{ title }}</h1>
+    {% if subtitle | default('') %}
+      <p class="text-center text-gray-500 mb-6">{{ subtitle }}</p>
+    {% endif %}
+    {% with messages = get_flashed_messages(with_categories=true) %}
+      {% if messages %}
+        {% for category, message in messages %}
+          <div class="mb-4 p-2 rounded {{ 'bg-green-100 text-green-700' if category == 'success' else 'bg-red-100 text-red-700' }} text-center">
+            {{ message }}
+          </div>
+        {% endfor %}
+      {% endif %}
+    {% endwith %}
+    <form method="post" novalidate>
+      {{ form.hidden_tag() }}
+      {% for field in form if field.type != 'CSRFTokenField' and field.type != 'SubmitField' %}
+        {% if field.type == 'BooleanField' %}
+          <div class="mb-4 flex items-center">
+            {{ field(class_="form-checkbox h-5 w-5 text-blue-600 mr-2") }}
+            {{ field.label(class_="text-sm font-semibold text-gray-700 mb-0") }}
+          </div>
+        {% else %}
+          <div class="mb-4">
+            {{ field.label(class_="block text-sm font-semibold text-gray-700 mb-2") }}
+            {{ field(class_="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all duration-300" + (" is-invalid" if field.errors else "")) }}
+            {% for error in field.errors %}
+              <div class="text-red-500 text-xs mt-1">{{ error }}</div>
+            {% endfor %}
+          </div>
+        {% endif %}
+      {% endfor %}
+      <button type="submit" class="w-full {% if 'login' in request.endpoint %}bg-green-500 hover:bg-green-600{% elif 'register' in request.endpoint %}bg-blue-500 hover:bg-blue-600{% elif 'change_pw' in request.endpoint %}bg-yellow-500 hover:bg-yellow-600{% else %}bg-gradient-to-r from-blue-500 to-green-500 hover:from-blue-600 hover:to-green-600{% endif %} text-white py-2 rounded-lg font-semibold text-lg shadow transition-all duration-300 mt-2 no-underline">
+        {{ form.submit.label.text if form.submit.label.text else 'Submit' }}
+      </button>
+    </form>
+  </div>
+</div>
+{% endblock %}

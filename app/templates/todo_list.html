@@ -1,0 +1,131 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="py-12 px-4 sm:px-6 lg:px-8" style="background-color: #FAEBD7;">
+    <div class="container mx-auto max-w-4xl">
+        <!-- Header -->
+        <div class="mb-8">
+            <div class="flex items-center justify-between">
+                <div class="flex items-center space-x-4">
+                    <div class="inline-flex items-center justify-center w-16 h-16 bg-gradient-to-br from-purple-500 to-pink-500 rounded-full shadow-lg">
+                        <i class="fas fa-list-check text-2xl text-white"></i>
+                    </div>
+                    <div>
+                        <h1 class="text-4xl font-bold bg-gradient-to-r from-purple-600 to-pink-600 bg-clip-text text-transparent">
+                            Todo List
+                        </h1>
+                        <p class="text-lg text-gray-700 leading-relaxed">
+                            All your todos, newest first
+                        </p>
+                    </div>
+                </div>
+                <a href="{{ url_for('account') }}" class="inline-flex items-center bg-blue-500 text-white px-6 py-3 rounded-lg hover:bg-blue-600 transition-all duration-300 shadow-md hover:shadow-lg transform hover:scale-105">
+                    <i class="fas fa-arrow-left mr-2"></i>
+                    Back to Account
+                </a>
+            </div>
+        </div>
+
+        <!-- Todo List -->
+        <div class="bg-white rounded-xl shadow-lg p-8">
+            {% if todos %}
+            <div class="grid grid-cols-1 gap-3" id="todo-list">
+                {% for todo in todos %}
+                    <div class="todo-card shadow p-3 rounded-lg flex items-center justify-between border-2 border-gray-700 cursor-pointer transition-all duration-300 hover:shadow-lg {% if todo.completed %}opacity-75{% endif %}" style="background-color: #FFF5EE;" data-todo-id="{{ todo.id }}" data-completed="{{ todo.completed|lower }}">
+                        <div class="flex items-center flex-1">
+                            <div class="todo-checkbox w-5 h-5 border-2 rounded mr-3 flex items-center justify-center {% if todo.completed %}bg-green-500 border-green-500{% else %}border-gray-400{% endif %}">
+                                <i class="fas fa-check text-white text-xs {% if not todo.completed %}hidden{% endif %}"></i>
+                            </div>
+                            <div class="flex-1">
+                                <div class="flex items-center justify-between">
+                                    <div>
+                                        <div class="text-sm {% if todo.completed %}line-through text-gray-400{% else %}text-gray-500{% endif %}">{{ todo.date }} at {{ todo.time }}</div>
+                                        <div class="text-lg font-semibold {% if todo.completed %}line-through text-gray-400{% else %}text-gray-800{% endif %}">{{ todo.event }}</div>
+                                        {% if todo.note %}
+                                        <div class="text-sm text-gray-600 mt-1">{{ todo.note }}</div>
+                                        {% endif %}
+                                    </div>
+                                    <div class="text-xs text-gray-400 ml-4">
+                                        Created: {{ todo.created_at.strftime('%Y-%m-%d %H:%M') }}
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                {% endfor %}
+            </div>
+            {% else %}
+            <div class="text-center text-gray-500 py-12">
+                <i class="fas fa-clipboard-list text-6xl mb-6"></i>
+                <h3 class="text-xl font-semibold mb-2">No todos yet</h3>
+                <p class="text-gray-600 mb-6">Start creating todos to organize your tasks!</p>
+                <a href="{{ url_for('home') }}" class="inline-flex items-center bg-blue-500 text-white px-6 py-3 rounded-lg hover:bg-blue-600 transition-all duration-300 shadow-md hover:shadow-lg transform hover:scale-105">
+                    <i class="fas fa-plus mr-2"></i>
+                    Create Your First Todo
+                </a>
+            </div>
+            {% endif %}
+        </div>
+    </div>
+</div>
+
+<script>
+document.addEventListener('DOMContentLoaded', function() {
+    // Todo completion functionality
+    document.querySelectorAll('.todo-card').forEach(card => {
+        card.addEventListener('click', function() {
+            const todoId = this.getAttribute('data-todo-id');
+            const checkbox = this.querySelector('.todo-checkbox');
+            const checkIcon = this.querySelector('.todo-checkbox i');
+            const timeElement = this.querySelector('.text-sm');
+            const eventElement = this.querySelector('.text-lg.font-semibold');
+            const isCompleted = this.getAttribute('data-completed') === 'true';
+            
+            // Send completion request
+            fetch(`/todo/complete/${todoId}`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'X-CSRFToken': document.querySelector('meta[name="csrf-token"]').getAttribute('content')
+                }
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.success) {
+                    // Toggle completion state
+                    if (isCompleted) {
+                        // Mark as incomplete
+                        checkbox.classList.remove('bg-green-500', 'border-green-500');
+                        checkbox.classList.add('border-gray-400');
+                        checkIcon.classList.add('hidden');
+                        timeElement.classList.remove('line-through', 'text-gray-400');
+                        timeElement.classList.add('text-gray-500');
+                        eventElement.classList.remove('line-through', 'text-gray-400');
+                        eventElement.classList.add('text-gray-800');
+                        this.classList.remove('opacity-75');
+                        this.setAttribute('data-completed', 'false');
+                    } else {
+                        // Mark as completed
+                        checkbox.classList.add('bg-green-500', 'border-green-500');
+                        checkbox.classList.remove('border-gray-400');
+                        checkIcon.classList.remove('hidden');
+                        timeElement.classList.add('line-through', 'text-gray-400');
+                        timeElement.classList.remove('text-gray-500');
+                        eventElement.classList.add('line-through', 'text-gray-400');
+                        eventElement.classList.remove('text-gray-800');
+                        this.classList.add('opacity-75');
+                        this.setAttribute('data-completed', 'true');
+                    }
+                } else {
+                    alert('Error updating todo: ' + data.message);
+                }
+            })
+            .catch(error => {
+                console.error('Error:', error);
+                alert('An error occurred while updating the todo.');
+            });
+        });
+    });
+});
+</script>
+{% endblock %} 

@@ -1,0 +1,97 @@
+{% extends "base.html" %}
+{% block content %}
+
+<!-- Icon Drop-down Menu -->
+<script src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js" defer></script>
+
+<div class="max-w-xl mx-auto bg-white p-8 rounded-xl shadow mt-6">
+  <h1 class="text-2xl font-bold mb-6 text-center">Create New Habit</h1>
+
+  <form method="POST" action="{{ url_for('new_habit') }}">
+    {{ form.hidden_tag() }}
+
+    <!-- Habit Name -->
+    <div class="mb-4">
+      {{ form.habit_name.label(class="block text-lg font-medium text-gray-700") }}
+      {{ form.habit_name(class="w-full border border-gray-300 rounded px-4 py-2 mt-1 text-lg focus:outline-none focus:ring-2 focus:ring-blue-500") }}
+    </div>
+
+    <!-- Frequency -->
+    <div class="mb-4">
+      {{ form.frequency.label(class="block text-lg font-medium text-gray-700") }}
+      {{ form.frequency(class="w-full border border-gray-300 rounded px-4 py-2 mt-1 text-lg focus:outline-none focus:ring-2 focus:ring-blue-500") }}
+    </div>
+
+    <!-- Time Period -->
+    <div class="mb-4">
+      {{ form.time_period.label(class="block text-lg font-medium text-gray-700") }}
+      {{ form.time_period(class="w-full border border-gray-300 rounded px-4 py-2 mt-1 text-lg focus:outline-none focus:ring-2 focus:ring-blue-500") }}
+    </div>
+
+    <!-- Note -->
+    <div class="mb-4">
+      {{ form.note.label(class="block text-lg font-medium text-gray-700") }}
+      {{ form.note(class="w-full border border-gray-300 rounded px-4 py-2 mt-1 text-base focus:outline-none focus:ring-2 focus:ring-blue-500") }}
+    </div>
+
+    <!-- Icon Selection with Preview -->
+    <div x-data="{
+        open: false,
+        selectedIcon: {
+          value: '{{ form.icon.data or 'fas fa-book' }}',
+          label: `{% for val, label in form.icon.choices %}{% if val == form.icon.data %}{{ label }}{% endif %}{% endfor %}` || 'Book'
+        }
+      }" class="mb-6 relative"
+    >
+      <label class="block text-lg font-medium text-gray-700 mb-1">Icon</label>
+
+      <!-- Button to trigger dropdown -->
+      <button
+        type="button"
+        @click="open = !open"
+        class="w-full flex items-center justify-between border border-gray-300 rounded-md px-4 py-3 bg-white text-lg shadow-sm hover:border-blue-400 focus:outline-none focus:ring-2 focus:ring-blue-500"
+      >
+        <div class="flex items-center gap-2">
+          <i :class="selectedIcon.value" class="text-blue-600 w-5"></i>
+          <span x-text="selectedIcon.label"></span>
+        </div>
+        <i class="fas fa-chevron-down text-gray-500"></i>
+      </button>
+
+      <!-- Dropdown list -->
+      <ul
+        x-show="open"
+        @click.away="open = false"
+        class="absolute z-10 mt-2 w-full max-h-60 overflow-auto rounded-md bg-white shadow-lg border border-gray-200"
+      >
+        {% for icon in form.icon.choices %}
+        <li>
+          <button
+            type="button"
+            @click="selectedIcon = { value: '{{ icon[0] }}', label: '{{ icon[1] }}' }; open = false"
+            class="w-full text-left px-4 py-2 hover:bg-blue-100 flex items-center gap-2"
+          >
+            <i class="{{ icon[0] }} text-blue-600 w-5"></i>
+            <span>{{ icon[1] }}</span>
+          </button>
+        </li>
+        {% endfor %}
+      </ul>
+
+      <!-- Hidden input to submit value -->
+      <input type="hidden" name="icon" :value="selectedIcon.value">
+    </div>
+
+    <!-- Submit + Cancel buttons -->
+    <div class="flex justify-center gap-4">
+      {{ form.submit(class="bg-blue-600 hover:bg-blue-700 text-white font-semibold px-6 py-3 rounded text-lg shadow") }}
+
+      <a href="{{ url_for('home') }}"
+         class="bg-gray-300 hover:bg-gray-400 text-gray-800 font-semibold px-6 py-3 rounded text-lg shadow inline-block">
+        Cancel
+      </a>
+    </div>
+  </form>
+</div>
+
+{% endblock %}
