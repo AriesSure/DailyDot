@@ -1,0 +1,35 @@
+# ── Python ───────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+
+# ── Environment ─────────────────────────────────────────────
+.env
+.flaskenv
+
+# ── IDE / OS ────────────────────────────────────────────────
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# ── SQLite (not used in Docker) ─────────────────────────────
+*.sqlite
+*.sqlite3
+
+# ── Test / coverage ─────────────────────────────────────────
+tests/
+.pytest_cache/
+htmlcov/
+.coverage
+
+# ── Git ─────────────────────────────────────────────────────
+.git/
+.gitignore
+
+# ── Temp card images (will be mounted volume) ───────────────
+app/static/cards/tmp/
