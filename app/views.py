@@ -1,6 +1,7 @@
 
 from flask import render_template, jsonify, redirect, url_for, flash, request
-from app import app, db, csrf
+from app import app
+from app.extensions import db, csrf
 from app.models import User, Habit, Record, Todo, Card
 from app.forms import ChooseForm, LoginForm, ChangePasswordForm, RegisterForm, HabitForm, CheckinForm, TodoForm
 from flask_login import current_user, login_user, logout_user, login_required, fresh_login_required
@@ -531,28 +532,6 @@ def checkin_logs(habit_id):
                          habit=habit,
                          records=all_records)
 
-
-# Error handlers
-# See: https://en.wikipedia.org/wiki/List_of_HTTP_status_codes
-
-# Error handler for 403 Forbidden
-@app.errorhandler(403)
-def error_403(error):
-    return render_template('errors/403.html', title='Error'), 403
-
-# Handler for 404 Not Found
-@app.errorhandler(404)
-def error_404(error):
-    return render_template('errors/404.html', title='Error'), 404
-
-@app.errorhandler(413)
-def error_413(error):
-    return render_template('errors/413.html', title='Error'), 413
-
-# 500 Internal Server Error
-@app.errorhandler(500)
-def error_500(error):
-    return render_template('errors/500.html', title='Error'), 500
 
 @app.route('/habit/delete_log/<int:log_id>', methods=['POST'])
 @login_required

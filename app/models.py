@@ -9,7 +9,7 @@ from sqlalchemy import ForeignKey
 # Use the official ORM mapped_column via sqlalchemy.orm (we will reference so.mapped_column below)
 from sqlalchemy.orm import relationship
 from werkzeug.security import generate_password_hash, check_password_hash
-from app import db, login
+from app.extensions import db, login
 from dataclasses import dataclass
 
 
@@ -75,8 +75,8 @@ class Habit(db.Model):
         return f'Habit(id={self.id}, name={self.habit_name}, frequency={self.frequency}, time_period = {self.time_period}, note={self.note}, user_id={self.user_id})'
 
     def completed_count(self):
-        from app import db
-        return db.session.query(Record).filter_by(habit_id=self.id).count() # Use database queries to obtain accurate record counts
+        from app.extensions import db
+        return db.session.query(Record).filter_by(habit_id=self.id).count()
 
 
 

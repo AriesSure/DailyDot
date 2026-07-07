@@ -1,4 +1,5 @@
-from app import app, db
+from app import app
+from app.extensions import db
 from app.models import User, Habit, Record, Todo, Card
 from flask_migrate import upgrade, init, migrate
 from flask import current_app
