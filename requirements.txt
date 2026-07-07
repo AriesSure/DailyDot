@@ -3,6 +3,7 @@ Flask-Login==0.6.3
 Flask-SQLAlchemy==3.0.5
 Flask-WTF==1.1.1
 WTForms==3.0.1
+email_validator>=2.0.0
 SQLAlchemy==2.0.21
 Werkzeug==2.3.7
 alembic==1.12.0
