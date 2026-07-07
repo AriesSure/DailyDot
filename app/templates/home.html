@@ -39,6 +39,24 @@
             <i class="fas fa-plus mr-2"></i>
             New Habit
         </button>
+        <button id="aiRecommendBtn" class="bg-gradient-to-r from-purple-600 to-pink-500 text-white px-6 py-3 rounded-lg hover:from-purple-700 hover:to-pink-600 text-lg font-semibold transition-all duration-300 shadow-md hover:shadow-lg transform hover:scale-105">
+            <i class="fas fa-robot mr-2"></i>
+            AI Recommend
+        </button>
+    </div>
+
+    <!-- AI Quick Create -->
+    <div class="mb-6">
+        <div class="bg-white rounded-xl shadow-lg p-4">
+            <div class="flex items-center gap-3">
+                <i class="fas fa-bolt text-yellow-500 text-xl"></i>
+                <input id="aiQuickCreate" type="text" class="flex-1 border border-gray-300 rounded-lg px-4 py-2 focus:ring-2 focus:ring-yellow-500 focus:border-yellow-500 outline-none" placeholder="Quick create: e.g. '每周一三五早上7点跑步30分钟'" />
+                <button id="aiQuickCreateBtn" class="bg-gradient-to-r from-yellow-500 to-orange-500 text-white px-4 py-2 rounded-lg hover:from-yellow-600 hover:to-orange-600 font-semibold transition-all duration-300 shadow-md whitespace-nowrap">
+                    <i class="fas fa-wand-magic-sparkles mr-1"></i> AI Parse
+                </button>
+            </div>
+            <div id="aiQuickCreateResult" class="mt-2 hidden"></div>
+        </div>
     </div>
 
     <!-- Habit and Todo List -->
@@ -109,8 +127,8 @@
   {% endwith %}
 
   <div class="flex justify-center gap-4 mt-6">
-    <a href="{{ url_for('register') }}" class="bg-blue-500 text-white px-6 py-2 rounded hover:bg-blue-600 transition-all duration-300 shadow-md hover:shadow-lg transform hover:scale-105 font-semibold">Register</a>
-    <a href="{{ url_for('login') }}" class="bg-green-500 text-white px-6 py-2 rounded hover:bg-green-600 transition-all duration-300 shadow-md hover:shadow-lg transform hover:scale-105 font-semibold">Login</a>
+    <a href="{{ url_for('auth.register') }}" class="bg-blue-500 text-white px-6 py-2 rounded hover:bg-blue-600 transition-all duration-300 shadow-md hover:shadow-lg transform hover:scale-105 font-semibold">Register</a>
+    <a href="{{ url_for('auth.login') }}" class="bg-green-500 text-white px-6 py-2 rounded hover:bg-green-600 transition-all duration-300 shadow-md hover:shadow-lg transform hover:scale-105 font-semibold">Login</a>
   </div>
 </div>
 
@@ -444,7 +462,7 @@ document.addEventListener('DOMContentLoaded', function() {
         const data = Object.fromEntries(formData);
         
         // Send request
-        fetch(`/check_in/${habitId}`, {
+        fetch(`/habits/check_in/${habitId}`, {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json',
@@ -471,7 +489,7 @@ document.addEventListener('DOMContentLoaded', function() {
     // New Card Button functionality
     const newCardBtn = document.getElementById('newCardBtn');
     newCardBtn.addEventListener('click', function() {
-        window.location.href = "{{ url_for('new_card') }}";
+        window.location.href = "{{ url_for('cards.new_card') }}";
     });
 
     // New Habit Modal functionality
@@ -540,7 +558,7 @@ document.addEventListener('DOMContentLoaded', function() {
         const data = Object.fromEntries(formData);
         
         // Send request
-        fetch('{{ url_for("new_habit") }}', {
+        fetch('{{ url_for("habits.new_habit") }}', {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json',
@@ -618,7 +636,7 @@ document.addEventListener('DOMContentLoaded', function() {
         data.date = `${dateParts[2]}/${dateParts[1]}/${dateParts[0]}`;
         
         // Send request
-        fetch('{{ url_for("new_todo") }}', {
+        fetch('{{ url_for("todos.new_todo") }}', {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json',
@@ -653,7 +671,7 @@ document.addEventListener('DOMContentLoaded', function() {
             const isCompleted = this.getAttribute('data-completed') === 'true';
             
             // Send completion request
-            fetch(`/todo/complete/${todoId}`, {
+            fetch(`/todos/complete/${todoId}`, {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',
@@ -699,5 +717,187 @@ document.addEventListener('DOMContentLoaded', function() {
     });
 });
 </script>
+
+<script>
+document.addEventListener('DOMContentLoaded', function() {
+// ── AI Recommend Modal ──────────────────────────────────────
+const aiModal = document.getElementById('aiRecommendModal');
+const aiModalContent = document.getElementById('aiRecommendModalContent');
+const aiBtn = document.getElementById('aiRecommendBtn');
+const aiCloseBtn = document.getElementById('aiCloseModal');
+const aiSubmitBtn = document.getElementById('aiSubmitGoal');
+const aiGoalInput = document.getElementById('aiGoalInput');
+const aiResults = document.getElementById('aiResults');
+
+function showAiModal() {
+    aiModal.classList.remove('hidden');
+    setTimeout(() => {
+        aiModalContent.classList.remove('scale-95', 'opacity-0');
+        aiModalContent.classList.add('scale-100', 'opacity-100');
+    }, 10);
+}
+function hideAiModal() {
+    aiModalContent.classList.remove('scale-100', 'opacity-100');
+    aiModalContent.classList.add('scale-95', 'opacity-0');
+    setTimeout(() => { aiModal.classList.add('hidden'); }, 300);
+}
+if (aiBtn) aiBtn.addEventListener('click', showAiModal);
+if (aiCloseBtn) aiCloseBtn.addEventListener('click', hideAiModal);
+if (aiModal) aiModal.addEventListener('click', function(e) {
+    if (e.target === aiModal) hideAiModal();
+});
+
+if (aiSubmitBtn) {
+    aiSubmitBtn.addEventListener('click', function() {
+        const goal = aiGoalInput.value.trim();
+        if (!goal) { alert('Please describe your goal.'); return; }
+        aiResults.innerHTML = '<div class="text-center py-4"><i class="fas fa-spinner fa-spin text-3xl text-purple-600"></i><p class="mt-2 text-gray-500">Analyzing...</p></div>';
+        aiSubmitBtn.disabled = true;
+        fetch('/ai/recommend', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'X-CSRFToken': document.querySelector('meta[name="csrf-token"]').getAttribute('content')
+            },
+            body: JSON.stringify({ goal: goal })
+        })
+        .then(r => r.json())
+        .then(data => {
+            aiSubmitBtn.disabled = false;
+            if (!data.success || !data.suggestions || data.suggestions.length === 0) {
+                aiResults.innerHTML = '<div class="text-center py-4 text-red-500">No suggestions found.</div>';
+                return;
+            }
+            let html = '<div class="space-y-3">';
+            data.suggestions.forEach((s) => {
+                html += '<div class="bg-gray-50 rounded-lg p-4 border border-gray-200">';
+                html += '<div class="flex items-center justify-between">';
+                html += '<div><span class="text-lg font-semibold text-gray-800">' + s.name + '</span>';
+                if (s.reason) html += '<p class="text-sm text-gray-500 mt-1">' + s.reason + '</p>';
+                html += '</div>';
+                html += '<button class="ml-2 bg-blue-500 text-white px-3 py-1 rounded text-sm hover:bg-blue-600 create-from-ai whitespace-nowrap" data-name="' + s.name + '" data-icon="' + (s.icon || 'fas fa-star') + '" data-freq="' + (s.frequency || 'Every day this week') + '" data-period="' + (s.time_period || 'Morning') + '"><i class="fas fa-plus mr-1"></i>Add</button>';
+                html += '</div></div>';
+            });
+            html += '</div>';
+            aiResults.innerHTML = html;
+            document.querySelectorAll('.create-from-ai').forEach(btn => {
+                btn.addEventListener('click', function() {
+                    fetch('/habits/new', {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json',
+                            'X-CSRFToken': document.querySelector('meta[name="csrf-token"]').getAttribute('content')
+                        },
+                        body: JSON.stringify({
+                            habit_name: this.dataset.name,
+                            icon: this.dataset.icon,
+                            frequency: this.dataset.freq,
+                            time_period: this.dataset.period,
+                            note: 'Created via AI Recommend'
+                        })
+                    })
+                    .then(r => r.json())
+                    .then(d => { if (d.success) { window.location.reload(); } else { alert(d.message); } });
+                });
+            });
+        })
+        .catch(err => {
+            aiSubmitBtn.disabled = false;
+            aiResults.innerHTML = '<div class="text-center py-4 text-red-500">Error: ' + err.message + '</div>';
+        });
+    });
+}
+});
+</script>
+
+<script>
+document.addEventListener('DOMContentLoaded', function() {
+// ── AI Quick Create ──────────────────────────────────────────
+const qcInput = document.getElementById('aiQuickCreate');
+const qcBtn = document.getElementById('aiQuickCreateBtn');
+const qcResult = document.getElementById('aiQuickCreateResult');
+
+if (qcBtn) {
+    qcBtn.addEventListener('click', function() {
+        const text = qcInput.value.trim();
+        if (!text) { alert('Please enter a habit description.'); return; }
+        qcResult.classList.remove('hidden');
+        qcResult.innerHTML = '<div class="text-center py-2"><i class="fas fa-spinner fa-spin text-yellow-600"></i> Parsing...</div>';
+        qcBtn.disabled = true;
+
+        fetch('/ai/parse-habit', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'X-CSRFToken': document.querySelector('meta[name="csrf-token"]').getAttribute('content')
+            },
+            body: JSON.stringify({ text: text })
+        })
+        .then(r => r.json())
+        .then(data => {
+            qcBtn.disabled = false;
+            if (!data.success) {
+                qcResult.innerHTML = '<div class="text-red-500 text-sm mt-1">' + (data.message || 'Parse failed') + '</div>';
+                return;
+            }
+            const h = data.habit;
+            let html = '<div class="bg-green-50 border border-green-200 rounded-lg p-3 mt-2 flex items-center justify-between">';
+            html += '<div><span class="font-semibold text-green-800">' + h.habit_name + '</span>';
+            html += '<span class="text-sm text-gray-500 ml-2">' + (h.frequency || '') + '</span>';
+            html += '<span class="text-sm text-gray-500 ml-2">' + (h.time_period || '') + '</span></div>';
+            html += '<button class="bg-green-500 text-white px-3 py-1 rounded text-sm hover:bg-green-600 quick-create-save font-semibold" data-name="' + h.habit_name + '" data-icon="' + (h.icon || 'fas fa-star') + '" data-freq="' + (h.frequency || 'Every day this week') + '" data-period="' + (h.time_period || 'Morning') + '" data-note="' + (h.note || 'Created via Quick Create') + '"><i class="fas fa-plus mr-1"></i>Add</button>';
+            html += '</div>';
+            qcResult.innerHTML = html;
+
+            document.querySelector('.quick-create-save')?.addEventListener('click', function() {
+                fetch('/habits/new', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'X-CSRFToken': document.querySelector('meta[name="csrf-token"]').getAttribute('content')
+                    },
+                    body: JSON.stringify({
+                        habit_name: this.dataset.name,
+                        icon: this.dataset.icon,
+                        frequency: this.dataset.freq,
+                        time_period: this.dataset.period,
+                        note: this.dataset.note
+                    })
+                })
+                .then(r => r.json())
+                .then(d => { if (d.success) { window.location.reload(); } else { alert(d.message); } });
+            });
+        })
+        .catch(err => {
+            qcBtn.disabled = false;
+            qcResult.innerHTML = '<div class="text-red-500 text-sm mt-1">Error: ' + err.message + '</div>';
+        });
+    });
+}
+});
+</script>
+
+<!-- AI Recommend Modal -->
+<div id="aiRecommendModal" class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 hidden">
+    <div id="aiRecommendModalContent" class="bg-white rounded-2xl shadow-2xl p-8 max-w-lg mx-4 w-full transform transition-all duration-300 scale-95 opacity-0">
+        <div class="flex items-center mb-6">
+            <div class="w-12 h-12 bg-purple-100 rounded-full flex items-center justify-center mr-4">
+                <i class="fas fa-robot text-purple-600 text-xl"></i>
+            </div>
+            <div>
+                <h3 class="text-xl font-bold text-gray-800">AI Habit Recommendation</h3>
+                <p class="text-sm text-gray-500">Describe your goal and get personalized suggestions</p>
+            </div>
+        </div>
+        <textarea id="aiGoalInput" rows="3" class="w-full border border-gray-300 rounded-lg p-3 focus:ring-2 focus:ring-purple-500 focus:border-purple-500 outline-none resize-none" placeholder="e.g. I want to improve my health and fitness..."></textarea>
+        <div class="flex space-x-3 mt-4">
+            <button id="aiSubmitGoal" class="flex-1 bg-gradient-to-r from-purple-600 to-pink-500 text-white px-4 py-2 rounded-lg hover:from-purple-700 hover:to-pink-600 font-semibold transition-all duration-300">
+                <i class="fas fa-magic mr-1"></i> Get Suggestions
+            </button>
+            <button id="aiCloseModal" class="flex-1 bg-gray-500 text-white px-4 py-2 rounded-lg hover:bg-gray-600 font-semibold transition-all duration-300">Cancel</button>
+        </div>
+        <div id="aiResults" class="mt-6"></div>
+    </div>
+</div>
 
 {% endblock %}

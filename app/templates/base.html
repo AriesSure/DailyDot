@@ -48,10 +48,10 @@
       <div class="flex items-center text-xl md:text-2xl font-black">
         {% if current_user.is_authenticated %}
           <div class="flex space-x-16 mr-16">
-            <a href="{{ url_for('home') }}" class="hover:text-blue-600 transition-colors text-gray-700" style="font-family: 'Dancing Script', cursive; letter-spacing: 0.1em; font-weight: 900; text-shadow: 1px 1px 2px rgba(0,0,0,0.1);">Home</a>
-            <a href="{{ url_for('my_habits') }}" class="hover:text-blue-600 transition-colors text-gray-700" style="font-family: 'Dancing Script', cursive; letter-spacing: 0.1em; font-weight: 900; text-shadow: 1px 1px 2px rgba(0,0,0,0.1);">MyHabits</a>
+            <a href="{{ url_for('main.home') }}" class="hover:text-blue-600 transition-colors text-gray-700" style="font-family: 'Dancing Script', cursive; letter-spacing: 0.1em; font-weight: 900; text-shadow: 1px 1px 2px rgba(0,0,0,0.1);">Home</a>
+            <a href="{{ url_for('habits.my_habits') }}" class="hover:text-blue-600 transition-colors text-gray-700" style="font-family: 'Dancing Script', cursive; letter-spacing: 0.1em; font-weight: 900; text-shadow: 1px 1px 2px rgba(0,0,0,0.1);">MyHabits</a>
           </div>
-          <a href="{{ url_for('account') }}" class="hover:text-blue-600 transition-colors text-gray-700" style="font-family: 'Dancing Script', cursive; letter-spacing: 0.1em; font-weight: 900; text-shadow: 1px 1px 2px rgba(0,0,0,0.1);">Account</a>
+          <a href="{{ url_for('auth.account') }}" class="hover:text-blue-600 transition-colors text-gray-700" style="font-family: 'Dancing Script', cursive; letter-spacing: 0.1em; font-weight: 900; text-shadow: 1px 1px 2px rgba(0,0,0,0.1);">Account</a>
         {% endif %}
       </div>
     </div>

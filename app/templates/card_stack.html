@@ -20,7 +20,7 @@
                     </div>
                 </div>
                 <div>
-                    <a href="{{ url_for('account') }}" class="inline-flex items-center bg-blue-500 text-white px-6 py-3 rounded-lg hover:bg-blue-600 transition-all duration-300 shadow-md hover:shadow-lg transform hover:scale-105">
+                    <a href="{{ url_for('auth.account') }}" class="inline-flex items-center bg-blue-500 text-white px-6 py-3 rounded-lg hover:bg-blue-600 transition-all duration-300 shadow-md hover:shadow-lg transform hover:scale-105">
                         <i class="fas fa-arrow-left mr-2"></i>
                         Back to Account
                     </a>
@@ -107,7 +107,7 @@
             </div>
             <h3 class="text-2xl font-bold text-gray-800 mb-3">No Cards Yet</h3>
             <p class="text-gray-600 mb-6">You haven't created any achievement cards yet.</p>
-            <a href="{{ url_for('new_card') }}" class="inline-flex items-center bg-purple-600 text-white px-6 py-3 rounded-lg hover:bg-purple-700 transition-all duration-300 shadow-lg hover:shadow-xl">
+            <a href="{{ url_for('cards.new_card') }}" class="inline-flex items-center bg-purple-600 text-white px-6 py-3 rounded-lg hover:bg-purple-700 transition-all duration-300 shadow-lg hover:shadow-xl">
                 <i class="fas fa-plus mr-2"></i>
                 Create Your First Card
             </a>
@@ -180,7 +180,7 @@ function hideDeleteModal() {
 
 document.getElementById('confirmDelete').addEventListener('click', function() {
     if (!cardToDelete) return;
-    fetch(`/api/card/${cardToDelete}`, { method: 'DELETE', headers: { 'X-CSRFToken': (document.querySelector('meta[name="csrf-token"]')?.content || '') } })
+    fetch(`/cards/api/card/${cardToDelete}`, { method: 'DELETE', headers: { 'X-CSRFToken': (document.querySelector('meta[name="csrf-token"]')?.content || '') } })
         .then(resp => resp.json())
         .then(data => {
             if (data.success) {

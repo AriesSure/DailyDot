@@ -9,7 +9,7 @@
     <div class="container mx-auto">
         <div class="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-8">
             {% for habit in habits %}
-            <a href="{{ url_for('habit_view', habit_id=habit.id) }}" class="block">
+            <a href="{{ url_for('habits.habit_view', habit_id=habit.id) }}" class="block">
                 <div class="shadow p-4 rounded-lg flex flex-col justify-between h-full border-2 border-gray-700 hover:shadow-2xl transform hover:-translate-y-2 transition-all duration-300" style="background-color: #FFF5EE;" data-habit-id="{{ habit.id }}">
                     <!-- Icon and Title -->
                     <div class="flex items-center mb-4">

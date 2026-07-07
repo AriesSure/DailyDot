@@ -37,7 +37,7 @@
       <!-- Action Buttons -->
       <div class="grid md:grid-cols-2 gap-6">
         <!-- Change Password Button -->
-        <a href="{{ url_for('change_pw') }}" 
+        <a href="{{ url_for('auth.change_pw') }}" 
            class="group bg-yellow-500 text-white px-6 py-4 rounded-xl hover:bg-yellow-600 transform hover:scale-105 transition-all duration-300 shadow-lg hover:shadow-xl">
           <div class="flex items-center justify-center">
             <i class="fas fa-key text-xl mr-3 group-hover:rotate-12 transition-transform duration-300"></i>
@@ -84,22 +84,27 @@
          <h3 class="text-xl font-semibold text-gray-800">Account Information</h3>
        </div>
        <div class="grid md:grid-cols-3 gap-4 text-center">
-         <div class="shadow p-4 rounded-lg border-2 border-gray-700 bg-[#FFF5EE] cursor-pointer hover:shadow-lg transition-all duration-300" onclick="window.location.href='{{ url_for('todo_list') }}'">
+         <div class="shadow p-4 rounded-lg border-2 border-gray-700 bg-[#FFF5EE] cursor-pointer hover:shadow-lg transition-all duration-300" onclick="window.location.href='{{ url_for('todos.todo_list') }}'">
            <i class="fas fa-calendar-alt text-gray-600 text-2xl mb-2"></i>
            <p class="text-sm text-gray-600">To-do List</p>
            <p class="text-lg font-semibold text-blue-600 hover:text-blue-800 transition-colors duration-300">View All</p>
          </div>
          <div class="shadow p-4 rounded-lg border-2 border-gray-700 bg-[#FFF5EE] cursor-pointer hover:shadow-lg transition-all duration-300">
-           <a href="{{ url_for('statistics') }}" class="block">
+           <a href="{{ url_for('stats.statistics') }}" class="block">
              <i class="fas fa-chart-line text-gray-600 text-2xl mb-2"></i>
              <p class="text-sm text-gray-600">Statistics Dashboard</p>
              <p class="text-lg font-semibold text-blue-600 hover:text-blue-800 transition-colors duration-300">View Data</p>
            </a>
          </div>
-         <div class="shadow p-4 rounded-lg border-2 border-gray-700 bg-[#FFF5EE] cursor-pointer hover:shadow-lg transition-all duration-300" onclick="window.location.href='{{ url_for('card_stack') }}'">
+         <div class="shadow p-4 rounded-lg border-2 border-gray-700 bg-[#FFF5EE] cursor-pointer hover:shadow-lg transition-all duration-300" onclick="window.location.href='{{ url_for('cards.card_stack') }}'">
            <i class="fas fa-layer-group text-gray-600 text-2xl mb-2"></i>
            <p class="text-sm text-gray-600">Card Stack</p>
            <p class="text-lg font-semibold text-blue-600 hover:text-blue-800 transition-colors duration-300">View Cards</p>
+         </div>
+         <div class="shadow p-4 rounded-lg border-2 border-gray-700 bg-[#FFF5EE] cursor-pointer hover:shadow-lg transition-all duration-300" onclick="window.location.href='{{ url_for('ai.ai_report', type='weekly', tone='coach') }}'">
+           <i class="fas fa-robot text-purple-600 text-2xl mb-2"></i>
+           <p class="text-sm text-gray-600">AI Report</p>
+           <p class="text-lg font-semibold text-purple-600 hover:text-purple-800 transition-colors duration-300">View Report</p>
          </div>
        </div>
      </div>
@@ -136,7 +141,7 @@ document.addEventListener('DOMContentLoaded', function() {
   });
   // Confirm Logout
   confirmLogout.addEventListener('click', function() {
-    window.location.href = "{{ url_for('logout') }}";
+    window.location.href = "{{ url_for('auth.logout') }}";
   });
 });
 </script>

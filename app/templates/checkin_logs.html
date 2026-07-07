@@ -5,7 +5,7 @@
     <div class="container mx-auto max-w-4xl">
         <!-- Return Button -->
         <div class="mb-6">
-            <a href="{{ url_for('habit_view', habit_id=habit.id) }}" class="inline-flex items-center bg-gradient-to-r from-blue-500 to-blue-600 text-white px-4 py-2 rounded-lg hover:from-blue-600 hover:to-blue-700 transition-all duration-300 shadow-md hover:shadow-lg transform hover:scale-105">
+            <a href="{{ url_for('habits.habit_view', habit_id=habit.id) }}" class="inline-flex items-center bg-gradient-to-r from-blue-500 to-blue-600 text-white px-4 py-2 rounded-lg hover:from-blue-600 hover:to-blue-700 transition-all duration-300 shadow-md hover:shadow-lg transform hover:scale-105">
                 <i class="fas fa-arrow-left mr-2"></i>
                 Back to Habit View
             </a>
@@ -129,7 +129,7 @@ document.addEventListener('DOMContentLoaded', function() {
     // Delete Confirmation
     confirmDelete.onclick = function() {
         if (!currentLogId) return;
-        fetch(`/habit/delete_log/${currentLogId}`, {
+        fetch(`/habits/delete_log/${currentLogId}`, {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json',

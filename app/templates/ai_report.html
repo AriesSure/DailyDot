@@ -1,0 +1,78 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="max-w-4xl mx-auto py-8 px-4">
+    <!-- Header -->
+    <div class="text-center mb-8">
+        <h1 class="text-3xl font-bold text-gray-800 mb-2">
+            <i class="fas fa-robot text-blue-600 mr-2"></i>
+            AI {{ report_type|capitalize }} Report
+        </h1>
+        <p class="text-gray-500">Tone: <span class="font-semibold text-gray-700">{{ tone }}</span></p>
+    </div>
+
+    <!-- Stats Summary -->
+    <div class="grid grid-cols-2 md:grid-cols-5 gap-4 mb-8">
+        <div class="bg-white rounded-xl shadow p-4 text-center">
+            <i class="fas fa-check-circle text-green-500 text-xl mb-1"></i>
+            <div class="text-2xl font-bold text-gray-800">{{ stats.total_checkins }}</div>
+            <div class="text-xs text-gray-500">Check-ins</div>
+        </div>
+        <div class="bg-white rounded-xl shadow p-4 text-center">
+            <i class="fas fa-percentage text-blue-500 text-xl mb-1"></i>
+            <div class="text-2xl font-bold text-gray-800">{{ "%.1f"|format(stats.completion_rate) }}%</div>
+            <div class="text-xs text-gray-500">Rate</div>
+        </div>
+        <div class="bg-white rounded-xl shadow p-4 text-center">
+            <i class="fas fa-fire text-orange-500 text-xl mb-1"></i>
+            <div class="text-2xl font-bold text-gray-800">{{ stats.streak }}</div>
+            <div class="text-xs text-gray-500">Streak</div>
+        </div>
+        <div class="bg-white rounded-xl shadow p-4 text-center">
+            <i class="fas fa-calendar-times text-red-500 text-xl mb-1"></i>
+            <div class="text-2xl font-bold text-gray-800">{{ stats.missed_days }}</div>
+            <div class="text-xs text-gray-500">Missed</div>
+        </div>
+        <div class="bg-white rounded-xl shadow p-4 text-center">
+            <i class="fas fa-trophy text-yellow-500 text-xl mb-1"></i>
+            <div class="text-lg font-bold text-gray-800 truncate">{{ stats.top_habit }}</div>
+            <div class="text-xs text-gray-500">Top Habit</div>
+        </div>
+    </div>
+
+    <!-- Controls -->
+    <div class="flex flex-wrap gap-4 mb-8 justify-center">
+        <a href="{{ url_for('ai.ai_report', type='weekly', tone=tone) }}"
+           class="px-4 py-2 rounded-lg font-semibold transition-all duration-300 shadow-md
+                  {% if report_type == 'weekly' %}bg-blue-600 text-white{% else %}bg-white text-gray-700 hover:bg-gray-100{% endif %}">
+            <i class="fas fa-calendar-week mr-1"></i> Weekly
+        </a>
+        <a href="{{ url_for('ai.ai_report', type='monthly', tone=tone) }}"
+           class="px-4 py-2 rounded-lg font-semibold transition-all duration-300 shadow-md
+                  {% if report_type == 'monthly' %}bg-blue-600 text-white{% else %}bg-white text-gray-700 hover:bg-gray-100{% endif %}">
+            <i class="fas fa-calendar-alt mr-1"></i> Monthly
+        </a>
+        <span class="w-px bg-gray-300"></span>
+        {% for t in ['coach', 'friend', 'analyst'] %}
+        <a href="{{ url_for('ai.ai_report', type=report_type, tone=t) }}"
+           class="px-4 py-2 rounded-lg font-semibold transition-all duration-300 shadow-md
+                  {% if tone == t %}bg-purple-600 text-white{% else %}bg-white text-gray-700 hover:bg-gray-100{% endif %}">
+            <i class="fas fa-{% if t == 'coach' %}bullhorn{% elif t == 'friend' %}smile{% else %}chart-bar{% endif %} mr-1"></i>
+            {{ t|capitalize }}
+        </a>
+        {% endfor %}
+    </div>
+
+    <!-- Report Content -->
+    <div class="bg-white rounded-2xl shadow-lg p-8 prose prose-lg max-w-none">
+        {{ report|safe }}
+    </div>
+
+    <!-- Back link -->
+    <div class="text-center mt-8">
+        <a href="{{ url_for('auth.account') }}" class="text-blue-600 hover:text-blue-800 transition-colors">
+            <i class="fas fa-arrow-left mr-1"></i> Back to Account
+        </a>
+    </div>
+</div>
+{% endblock %}

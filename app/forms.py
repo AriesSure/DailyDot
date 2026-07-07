@@ -4,7 +4,7 @@ from wtforms import SubmitField, HiddenField, StringField, PasswordField, Boolea
 from wtforms.fields.numeric import IntegerField
 from wtforms.fields.simple import TextAreaField
 from wtforms.validators import DataRequired, EqualTo, NumberRange, ValidationError, Email, Optional, Length
-from app import db
+from app.extensions import db
 from datetime import datetime
 from app.models import User
 
