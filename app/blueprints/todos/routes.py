@@ -9,7 +9,7 @@ from app.services.todo_service import (
     create_todo,
     toggle_complete,
     update_todo,
-    delete_todo,
+    delete_todo as service_delete_todo,
     get_todos_for_user,
 )
 
@@ -95,7 +95,7 @@ def delete_todo(todo_id):
     if not request.is_json:
         return jsonify({'success': False, 'message': 'Invalid request'})
     try:
-        delete_todo(todo_id, current_user.id)
+        service_delete_todo(todo_id, current_user.id)
         return jsonify({'success': True, 'message': 'Todo deleted successfully'})
     except ValueError as e:
         return jsonify({'success': False, 'message': str(e)})
