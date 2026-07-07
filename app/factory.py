@@ -66,6 +66,7 @@ def _register_blueprints(app: Flask) -> None:
     from app.blueprints.todos.routes import todos_bp
     from app.blueprints.cards.routes import cards_bp
     from app.blueprints.stats.routes import stats_bp
+    from app.blueprints.ai.routes import ai_bp
 
     app.register_blueprint(auth_bp)
     app.register_blueprint(main_bp)
@@ -73,8 +74,7 @@ def _register_blueprints(app: Flask) -> None:
     app.register_blueprint(todos_bp)
     app.register_blueprint(cards_bp)
     app.register_blueprint(stats_bp)
-
-    # ai_bp will be registered in Phase 4
+    app.register_blueprint(ai_bp)
 
 
 def _ensure_dev_tables(app: Flask) -> None:
