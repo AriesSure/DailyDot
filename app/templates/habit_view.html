@@ -5,11 +5,11 @@
     <div class="container mx-auto max-w-4xl">
         <!-- Return Button -->
         <div class="mb-6 flex justify-between items-center">
-            <a href="{{ url_for('my_habits') }}" class="inline-flex items-center bg-gradient-to-r from-blue-500 to-blue-600 text-white px-4 py-2 rounded-lg hover:from-blue-600 hover:to-blue-700 transition-all duration-300 shadow-md hover:shadow-lg transform hover:scale-105">
+            <a href="{{ url_for('habits.my_habits') }}" class="inline-flex items-center bg-gradient-to-r from-blue-500 to-blue-600 text-white px-4 py-2 rounded-lg hover:from-blue-600 hover:to-blue-700 transition-all duration-300 shadow-md hover:shadow-lg transform hover:scale-105">
                 <i class="fas fa-arrow-left mr-2"></i>
                 Back to My Habits
             </a>
-            <a href="{{ url_for('habit_edit', habit_id=habit.id) }}" class="ml-4 bg-yellow-500 text-white px-6 py-2 rounded-lg hover:bg-yellow-600 transition-all duration-300 shadow-md hover:shadow-lg transform hover:scale-105 font-semibold inline-flex items-center"><i class="fas fa-edit mr-2"></i>Edit</a>
+            <a href="{{ url_for('habits.habit_edit', habit_id=habit.id) }}" class="ml-4 bg-yellow-500 text-white px-6 py-2 rounded-lg hover:bg-yellow-600 transition-all duration-300 shadow-md hover:shadow-lg transform hover:scale-105 font-semibold inline-flex items-center"><i class="fas fa-edit mr-2"></i>Edit</a>
         </div>
 
         <!-- Habit Info Card -->
@@ -82,7 +82,7 @@
         <div class="bg-white rounded-xl shadow-lg p-8 mt-2">
             <div class="flex justify-between items-center">
                 <h2 class="text-2xl font-bold text-gray-800">Annual Statistics</h2>
-                <a href="{{ url_for('annual_statistics', habit_id=habit.id) }}" class="inline-flex items-center bg-gradient-to-r from-blue-500 to-blue-600 text-white px-4 py-2 rounded-lg hover:from-blue-600 hover:to-blue-700 transition-all duration-300 shadow-md hover:shadow-lg transform hover:scale-105">
+                <a href="{{ url_for('stats.annual_statistics', habit_id=habit.id) }}" class="inline-flex items-center bg-gradient-to-r from-blue-500 to-blue-600 text-white px-4 py-2 rounded-lg hover:from-blue-600 hover:to-blue-700 transition-all duration-300 shadow-md hover:shadow-lg transform hover:scale-105">
                     <span class="mr-2">View</span>
                     <i class="fas fa-arrow-right"></i>
                 </a>
@@ -93,7 +93,7 @@
         <div class="bg-white rounded-xl shadow-lg p-8 mt-2">
             <div class="flex justify-between items-center">
                 <h2 class="text-2xl font-bold text-gray-800">Check-in Logs</h2>
-                <a href="{{ url_for('checkin_logs', habit_id=habit.id) }}" class="inline-flex items-center bg-gradient-to-r from-blue-500 to-blue-600 text-white px-4 py-2 rounded-lg hover:from-blue-600 hover:to-blue-700 transition-all duration-300 shadow-md hover:shadow-lg transform hover:scale-105">
+                <a href="{{ url_for('habits.checkin_logs', habit_id=habit.id) }}" class="inline-flex items-center bg-gradient-to-r from-blue-500 to-blue-600 text-white px-4 py-2 rounded-lg hover:from-blue-600 hover:to-blue-700 transition-all duration-300 shadow-md hover:shadow-lg transform hover:scale-105">
                     <i class="fas fa-list mr-2"></i>
                     View all logs
                 </a>
@@ -406,7 +406,7 @@ document.addEventListener('DOMContentLoaded', function() {
     // Pass icon and name when calling in confirmDelete.onclick
     confirmDelete.onclick = function() {
         if (modalAction === 'delete-habit') {
-            fetch(`/habit/delete/{{ habit.id }}`, {
+            fetch(`/habits/delete/{{ habit.id }}`, {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',
@@ -416,7 +416,7 @@ document.addEventListener('DOMContentLoaded', function() {
             .then(response => response.json())
             .then(data => {
                 if (data.success) {
-                    window.location.href = '{{ url_for("my_habits") }}';
+                    window.location.href = '{{ url_for("habits.my_habits") }}';
                 } else {
                     alert('Error deleting habit: ' + data.message);
                 }
@@ -432,7 +432,7 @@ document.addEventListener('DOMContentLoaded', function() {
                 }
             }, 350);
         } else if (modalAction === 'calendar-uncheck') {
-            fetch(`/habit/uncheck_by_date/{{ habit.id }}`, {
+            fetch(`/habits/uncheck_by_date/{{ habit.id }}`, {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',
@@ -460,7 +460,7 @@ document.addEventListener('DOMContentLoaded', function() {
             const dateString = checkinForm.getAttribute('data-calendar-date');
             const data = Object.fromEntries(new FormData(this));
             data.date = dateString;
-            fetch(`/habit/checkin_by_date/{{ habit.id }}`, {
+            fetch(`/habits/checkin_by_date/{{ habit.id }}`, {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',

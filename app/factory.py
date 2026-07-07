@@ -59,8 +59,22 @@ def create_app(config_name: str | None = None) -> Flask:
 
 
 def _register_blueprints(app: Flask) -> None:
-    """Register blueprint modules (stubs; will grow in Phase 2)."""
-    # placeholder — no blueprints with routes yet
+    """Register all blueprint modules."""
+    from app.blueprints.auth.routes import auth_bp
+    from app.blueprints.main.routes import main_bp
+    from app.blueprints.habits.routes import habits_bp
+    from app.blueprints.todos.routes import todos_bp
+    from app.blueprints.cards.routes import cards_bp
+    from app.blueprints.stats.routes import stats_bp
+
+    app.register_blueprint(auth_bp)
+    app.register_blueprint(main_bp)
+    app.register_blueprint(habits_bp)
+    app.register_blueprint(todos_bp)
+    app.register_blueprint(cards_bp)
+    app.register_blueprint(stats_bp)
+
+    # ai_bp will be registered in Phase 4
 
 
 def _ensure_dev_tables(app: Flask) -> None:

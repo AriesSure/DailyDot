@@ -11,9 +11,9 @@ from app.extensions import db, migrate, login, csrf
 
 app = create_app()
 
-# Keep existing view/model imports at the bottom to avoid circular imports.
-# (These will move into blueprints during Phase 2.)
-from app import views, models  # noqa: E402, F401
+# Keep model imports so SQLAlchemy can map them.
+# Routes are now registered via blueprints in the factory.
+from app import models  # noqa: E402, F401
 from app.debug_utils import (  # noqa: E402, F401
     reset_db,
     init_migrations,

@@ -19,7 +19,7 @@
                         </p>
                     </div>
                 </div>
-                <a href="{{ url_for('account') }}" class="inline-flex items-center bg-blue-500 text-white px-6 py-3 rounded-lg hover:bg-blue-600 transition-all duration-300 shadow-md hover:shadow-lg transform hover:scale-105">
+                <a href="{{ url_for('auth.account') }}" class="inline-flex items-center bg-blue-500 text-white px-6 py-3 rounded-lg hover:bg-blue-600 transition-all duration-300 shadow-md hover:shadow-lg transform hover:scale-105">
                     <i class="fas fa-arrow-left mr-2"></i>
                     Back to Account
                 </a>
@@ -65,7 +65,7 @@
                 <i class="fas fa-clipboard-list text-6xl mb-6"></i>
                 <h3 class="text-xl font-semibold mb-2">No todos yet</h3>
                 <p class="text-gray-600 mb-6">Start creating todos to organize your tasks!</p>
-                <a href="{{ url_for('home') }}" class="inline-flex items-center bg-blue-500 text-white px-6 py-3 rounded-lg hover:bg-blue-600 transition-all duration-300 shadow-md hover:shadow-lg transform hover:scale-105">
+                <a href="{{ url_for('main.home') }}" class="inline-flex items-center bg-blue-500 text-white px-6 py-3 rounded-lg hover:bg-blue-600 transition-all duration-300 shadow-md hover:shadow-lg transform hover:scale-105">
                     <i class="fas fa-plus mr-2"></i>
                     Create Your First Todo
                 </a>
@@ -170,7 +170,7 @@ document.addEventListener('DOMContentLoaded', function() {
             const isCompleted = card.getAttribute('data-completed') === 'true';
             
             // Send completion request
-            fetch(`/todo/complete/${todoId}`, {
+            fetch(`/todos/complete/${todoId}`, {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',
@@ -235,7 +235,7 @@ document.addEventListener('DOMContentLoaded', function() {
             const isCompleted = card.getAttribute('data-completed') === 'true';
             
             // Send completion request
-            fetch(`/todo/complete/${todoId}`, {
+            fetch(`/todos/complete/${todoId}`, {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',
@@ -349,7 +349,7 @@ document.addEventListener('DOMContentLoaded', function() {
         data.date = `${dateParts[2]}/${dateParts[1]}/${dateParts[0]}`;
         
         // Send update request
-        fetch(`/todo/edit/${todoId}`, {
+        fetch(`/todos/edit/${todoId}`, {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json',
@@ -423,7 +423,7 @@ document.addEventListener('DOMContentLoaded', function() {
         if (!todoToDelete) return;
         
         // Send delete request
-        fetch(`/todo/delete/${todoToDelete}`, {
+        fetch(`/todos/delete/${todoToDelete}`, {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json',

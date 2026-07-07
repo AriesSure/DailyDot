@@ -109,8 +109,8 @@
   {% endwith %}
 
   <div class="flex justify-center gap-4 mt-6">
-    <a href="{{ url_for('register') }}" class="bg-blue-500 text-white px-6 py-2 rounded hover:bg-blue-600 transition-all duration-300 shadow-md hover:shadow-lg transform hover:scale-105 font-semibold">Register</a>
-    <a href="{{ url_for('login') }}" class="bg-green-500 text-white px-6 py-2 rounded hover:bg-green-600 transition-all duration-300 shadow-md hover:shadow-lg transform hover:scale-105 font-semibold">Login</a>
+    <a href="{{ url_for('auth.register') }}" class="bg-blue-500 text-white px-6 py-2 rounded hover:bg-blue-600 transition-all duration-300 shadow-md hover:shadow-lg transform hover:scale-105 font-semibold">Register</a>
+    <a href="{{ url_for('auth.login') }}" class="bg-green-500 text-white px-6 py-2 rounded hover:bg-green-600 transition-all duration-300 shadow-md hover:shadow-lg transform hover:scale-105 font-semibold">Login</a>
   </div>
 </div>
 
@@ -444,7 +444,7 @@ document.addEventListener('DOMContentLoaded', function() {
         const data = Object.fromEntries(formData);
         
         // Send request
-        fetch(`/check_in/${habitId}`, {
+        fetch(`/habits/check_in/${habitId}`, {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json',
@@ -471,7 +471,7 @@ document.addEventListener('DOMContentLoaded', function() {
     // New Card Button functionality
     const newCardBtn = document.getElementById('newCardBtn');
     newCardBtn.addEventListener('click', function() {
-        window.location.href = "{{ url_for('new_card') }}";
+        window.location.href = "{{ url_for('cards.new_card') }}";
     });
 
     // New Habit Modal functionality
@@ -540,7 +540,7 @@ document.addEventListener('DOMContentLoaded', function() {
         const data = Object.fromEntries(formData);
         
         // Send request
-        fetch('{{ url_for("new_habit") }}', {
+        fetch('{{ url_for("habits.new_habit") }}', {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json',
@@ -618,7 +618,7 @@ document.addEventListener('DOMContentLoaded', function() {
         data.date = `${dateParts[2]}/${dateParts[1]}/${dateParts[0]}`;
         
         // Send request
-        fetch('{{ url_for("new_todo") }}', {
+        fetch('{{ url_for("todos.new_todo") }}', {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json',
@@ -653,7 +653,7 @@ document.addEventListener('DOMContentLoaded', function() {
             const isCompleted = this.getAttribute('data-completed') === 'true';
             
             // Send completion request
-            fetch(`/todo/complete/${todoId}`, {
+            fetch(`/todos/complete/${todoId}`, {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',
