@@ -217,51 +217,35 @@ def get_card_page_data(user_id):
     }
 
 
+import json
+from pathlib import Path
+
 # ── Quote / image API ─────────────────────────────────────────
 
 
-_QUOTES = {
-    'motivation': [
-        "Every day is a new opportunity to be better.",
-        "Success is the sum of small efforts repeated day in and day out.",
-        "The journey of a thousand miles begins with one step.",
-        "Believe you can and you're halfway there.",
-        "Your only limit is your mind.",
-    ],
-    'success': [
-        "Success doesn't just find you. You have to go out and get it.",
-        "The harder you work for something, the greater you'll feel when you achieve it.",
-        "Great things never come from comfort zones.",
-        "Dream it. Wish it. Do it.",
-        "Success is not final, failure is not fatal: it is the courage to continue that counts.",
-    ],
-    'persistence': [
-        "Don't stop when you're tired. Stop when you're done.",
-        "It's not whether you get knocked down, it's whether you get up.",
-        "Difficult roads often lead to beautiful destinations.",
-        "Fall seven times, stand up eight.",
-        "The difference between ordinary and extraordinary is that little extra.",
-    ],
-    'growth': [
-        "Be yourself; everyone else is already taken.",
-        "You are never too old to set another goal or to dream a new dream.",
-        "The only way to do great work is to love what you do.",
-        "Growth begins at the end of your comfort zone.",
-        "What lies behind us and what lies before us are tiny matters compared to what lies within us.",
-    ],
-    'daily': [
-        "Wake up with determination. Go to bed with satisfaction.",
-        "Do something today that your future self will thank you for.",
-        "Little progress is still progress.",
-        "Great things take time.",
-        "Today is a good day to have a good day.",
-    ],
+def _load_quotes() -> dict[str, list[str]]:
+    """Load quotes from ``app/data/quotes.json``."""
+    path = Path(__file__).resolve().parent.parent / "data" / "quotes.json"
+    try:
+        with open(path, encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return {}  # graceful fallback
+
+
+_QUOTES = _load_quotes()
+_FALLBACK_QUOTES = {
+    'motivation': ["Every day is a new opportunity to be better."],
+    'success': ["Success is not final, failure is not fatal."],
+    'persistence': ["Fall seven times, stand up eight."],
+    'growth': ["Growth begins at the end of your comfort zone."],
+    'daily': ["Today is a good day to have a good day."],
 }
 
 
 def get_random_quote(category='motivation'):
     """Return a random quote from the given category."""
-    cat = _QUOTES.get(category, _QUOTES['motivation'])
+    cat = _QUOTES.get(category) or _FALLBACK_QUOTES.get(category) or _FALLBACK_QUOTES['motivation']
     return random.choice(cat)
 
 

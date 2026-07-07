@@ -34,7 +34,11 @@ def create_app(config_name: str | None = None) -> Flask:
     # ── Extensions ──────────────────────────────────────────────
     init_extensions(app)
 
-    # ── Blueprints (stubs now, populated in Phase 2) ────────────
+    # ── Logging ─────────────────────────────────────────────────
+    from app.logging_config import setup_logging
+    setup_logging(app)
+
+    # ── Blueprints ──────────────────────────────────────────────
     _register_blueprints(app)
 
     # ── Error handlers ──────────────────────────────────────────
