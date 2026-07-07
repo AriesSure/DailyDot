@@ -561,7 +561,7 @@ def habit_delete_log(log_id):
     if not record:
         return jsonify({'success': False, 'message': 'Log does not exist or no permission'})
     try:
-        record.note = ''
+        db.session.delete(record)
         db.session.commit()
         return jsonify({'success': True})
     except Exception as e:

@@ -55,7 +55,7 @@ class Todo(db.Model):
     user: so.Mapped['User'] = relationship(back_populates='todos')
 
     def __repr__(self):
-        return f'Habit(id={self.id}, event={self.event}, date={self.date}, time = {self.time}, note={self.note}, user_id={self.user_id})'
+        return f'Todo(id={self.id}, event={self.event}, date={self.date}, time = {self.time}, note={self.note}, user_id={self.user_id})'
 
 
 class Habit(db.Model):
@@ -87,7 +87,7 @@ class Record(db.Model):
     )
     id: so.Mapped[int] = so.mapped_column(primary_key=True)
     checkin_date: so.Mapped[date] = so.mapped_column(sa.Date, default=date.today, nullable=False)
-    checkin_time: so.Mapped[time] = so.mapped_column(sa.Time, nullable=False, default=datetime.utcnow().time())
+    checkin_time: so.Mapped[time] = so.mapped_column(sa.Time, nullable=False, default=lambda: datetime.utcnow().time())
     habit_id: so.Mapped[int] = so.mapped_column(ForeignKey('habits.id'), index=True)
     habit: so.Mapped['Habit'] = relationship(back_populates='records')
     note: so.Mapped[str] = so.mapped_column(sa.String(1024), nullable=True)
