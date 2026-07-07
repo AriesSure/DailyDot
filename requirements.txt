@@ -8,6 +8,7 @@ Werkzeug==2.3.7
 alembic==1.12.0
 requests==2.31.0
 python-dotenv==1.0.0
+flask-migrate>=4.0.0
 
 # ── AI features ─────────────────────────────────────────────
 sentence-transformers>=2.2.0
