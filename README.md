@@ -26,7 +26,6 @@
 - [AI 功能](#ai-功能)
 - [测试](#测试)
 - [部署](#部署)
-- [简历亮点](#简历亮点)
 
 ---
 
@@ -376,20 +375,6 @@ pip install gunicorn
 # 启动
 gunicorn --bind 0.0.0.0:5000 --workers 4 "app:app"
 ```
-
----
-
-## 简历亮点
-
-> **DailyDot — AI 驱动的智能习惯追踪平台** | Flask, MySQL, Redis, Docker, LLM, RAG
->
-> - 设计并实现基于 Flask Blueprint + 应用工厂的模块化后端，7 个蓝图、35 个 RESTful API 端点
-> - **RAG 架构**：sentence-transformers + FAISS 向量知识库（50+ 模板），结合 LLM 实现个性化习惯推荐
-> - **Function Calling**：自然语言 → 结构化数据自动解析
-> - **Prompt Engineering**：分层模板体系，3 种语气风格的 AI 报告自动生成
-> - 完成 SQLite → MySQL 迁移，Alembic 管理数据库变更
-> - Docker Compose 编排 4 服务（Flask + MySQL + Redis + Celery）
-> - pytest 48 个测试用例，GitHub Actions CI/CD
 
 ---
 
