@@ -5,6 +5,11 @@ __pycache__/
 dist/
 build/
 
+# Virtual Environment
+.venv/
+venv/
+env/
+
 # IDE / OS
 .idea/
 .vscode/
