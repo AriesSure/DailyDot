@@ -103,8 +103,8 @@ class _FakeDate(date):
 
 @pytest.fixture
 def fixed_today(monkeypatch):
-    """Replace ``routes.date.today()`` with a fixed date (2026-07-27)."""
-    monkeypatch.setattr("app.blueprints.ai.routes.date", _FakeDate)
+    """Replace ``service.date.today()`` with a fixed date (2026-07-27)."""
+    monkeypatch.setattr("app.ai.service.date", _FakeDate)
 
 
 @pytest.fixture
@@ -405,6 +405,30 @@ class TestParseHabit:
         assert data["success"] is False
         assert "LLM error" in data["message"]
 
+    @pytest.mark.parametrize("tool_result", [
+        {},
+        [],
+        "",
+        0,
+    ])
+    def test_current_behavior_parse_habit_falsy_tool_result_cannot_parse(
+            self, mock_llm_factory, client, auth_headers, tool_result):
+        """Current behavior: falsy non-None tool results → ``Could not parse``.
+
+        The pre-refactoring route used ``if result:`` to decide success, so
+        ``{}``, ``[]``, ``""``, and ``0`` all fell into the "Could not parse"
+        branch (not ``LLM error``).  This test preserves that boundary — it
+        should be reviewed when DD-TASK-004 adds proper schema validation.
+        """
+        mock_llm_factory(tools_return=tool_result)
+        r = client.post("/ai/parse-habit", json={"text": "每天跑步"},
+                        headers=auth_headers)
+        assert r.status_code == 200
+        data = r.get_json()
+        assert data["success"] is False
+        assert "Could not parse" in data.get("message", "")
+        assert "LLM error" not in data.get("message", "")
+
 
 # ── Part 3: AI Report ────────────────────────────────────────────
 
@@ -559,22 +583,22 @@ class TestParseJsonList:
     """_parse_json_list — markdown fence handling, non-list JSON, empty input."""
 
     def test_markdown_fence(self):
-        from app.blueprints.ai.routes import _parse_json_list
+        from app.ai.service import _parse_json_list
         result = _parse_json_list('```json\n[{"a":1}]\n```')
         assert result == [{"a": 1}]
 
     def test_bare_json(self):
-        from app.blueprints.ai.routes import _parse_json_list
+        from app.ai.service import _parse_json_list
         result = _parse_json_list('[{"a":1}]')
         assert result == [{"a": 1}]
 
     def test_non_list_json(self):
-        from app.blueprints.ai.routes import _parse_json_list
+        from app.ai.service import _parse_json_list
         result = _parse_json_list('{"key":"val"}')
         assert result is None
 
     def test_empty_string(self):
-        from app.blueprints.ai.routes import _parse_json_list
+        from app.ai.service import _parse_json_list
         result = _parse_json_list("")
         assert result is None
 
