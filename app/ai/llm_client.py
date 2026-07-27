@@ -42,7 +42,12 @@ class LLMClient:
 
     def chat_with_tools(self, messages: list[dict], tools: list[dict],
                         temperature: float = 0.3) -> dict | None:
-        """Chat with tool/function calling. Returns the first tool-call args dict."""
+        """Chat with tool/function calling.
+
+        Returns ``{"name": str, "arguments": object}`` or ``None``
+        (no tool call).  Raises ``RuntimeError`` if more than one tool
+        call is returned.
+        """
         client = self._get_client()
         resp = client.chat.completions.create(
             model=self.model,
@@ -52,9 +57,16 @@ class LLMClient:
             temperature=temperature,
         )
         msg = resp.choices[0].message
-        if msg.tool_calls:
-            return json.loads(msg.tool_calls[0].function.arguments)
-        return None
+        if not msg.tool_calls:
+            return None
+        if len(msg.tool_calls) > 1:
+            raise RuntimeError(
+                f"Expected exactly 1 tool call, got {len(msg.tool_calls)}"
+            )
+        return {
+            "name": msg.tool_calls[0].function.name,
+            "arguments": json.loads(msg.tool_calls[0].function.arguments),
+        }
 
 
 # Module-level singleton

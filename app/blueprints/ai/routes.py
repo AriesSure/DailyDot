@@ -10,6 +10,7 @@ from app.ai.service import (
     parse_habit_text,
     generate_report_data,
     generate_report_text,
+    ToolValidationError,
 )
 ai_bp = Blueprint("ai", __name__, url_prefix="/ai")
 
@@ -47,6 +48,8 @@ def parse_habit():
     llm = get_llm()
     try:
         result = parse_habit_text(text, llm)
+    except ToolValidationError as exc:
+        return jsonify({"success": False, "message": str(exc)})
     except Exception as exc:
         return jsonify({"success": False, "message": f"LLM error: {exc}"})
     if result is None:

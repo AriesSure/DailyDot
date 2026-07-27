@@ -18,6 +18,19 @@ import pytest
 from datetime import date, timedelta, datetime
 
 
+# ── Tool Call Helper ──────────────────────────────────────────────
+
+
+def tool_call(arguments, name="create_habit"):
+    """Build a ``chat_with_tools()`` return value matching the new contract.
+
+    ``arguments`` can be any JSON-deserializable value (dict, list, str, etc.).
+    Use this helper in *every* test that simulates a successful tool call —
+    never pass a bare ``dict`` as ``tools_return``.
+    """
+    return {"name": name, "arguments": arguments}
+
+
 # ── Mock Classes ──────────────────────────────────────────────────
 
 
@@ -259,13 +272,13 @@ class TestParseHabit:
     def test_parse_habit_full_fields(self, mock_llm_factory,
                                      client, auth_headers):
         """All 5 tool fields returned → route returns them as-is."""
-        mock_llm_factory(tools_return={
+        mock_llm_factory(tools_return=tool_call({
             "habit_name": "晨跑",
             "frequency": "Every day this week",
             "time_period": "Morning",
             "icon": "fas fa-running",
             "note": "每天5公里",
-        })
+        }))
         r = client.post("/ai/parse-habit", json={"text": "每天早上跑步"},
                         headers=auth_headers)
         assert r.status_code == 200
@@ -281,11 +294,11 @@ class TestParseHabit:
     def test_parse_habit_missing_icon_defaults(self, mock_llm_factory,
                                                 client, auth_headers):
         """Tool response without icon → route applies ``fas fa-star`` default."""
-        mock_llm_factory(tools_return={
+        mock_llm_factory(tools_return=tool_call({
             "habit_name": "阅读",
             "frequency": "Every day this week",
             "time_period": "Evening",
-        })
+        }))
         r = client.post("/ai/parse-habit", json={"text": "每天晚上阅读"},
                         headers=auth_headers)
         assert r.status_code == 200
@@ -318,11 +331,11 @@ class TestParseHabit:
     def test_parse_habit_tool_call_contract(self, mock_llm_factory,
                                              client, auth_headers):
         """Route sends ``PARSE_HABIT_TOOLS``, correct temperature, and input text."""
-        mock_llm = mock_llm_factory(tools_return={
+        mock_llm = mock_llm_factory(tools_return=tool_call({
             "habit_name": "晨跑",
             "frequency": "Every day this week",
             "time_period": "Morning",
-        })
+        }))
         client.post("/ai/parse-habit", json={"text": "每天早上跑步"},
                     headers=auth_headers)
         assert len(mock_llm.tools_calls) == 1
@@ -343,82 +356,35 @@ class TestParseHabit:
         assert "Please enter a habit description" in data["message"]
         assert len(mock_llm.tools_calls) == 0
 
-    def test_current_behavior_tool_missing_habit_name(
-            self, mock_llm_factory, client, auth_headers):
-        """Current behavior: missing ``habit_name`` → still returns success, no default name injected."""
-        mock_llm_factory(tools_return={
-            "frequency": "Every day this week",
-            "time_period": "Evening",
-        })
-        r = client.post("/ai/parse-habit", json={"text": "每天晚上阅读"},
-                        headers=auth_headers)
-        assert r.status_code == 200
-        data = r.get_json()
-        assert data["success"] is True
-        assert "habit_name" not in data["habit"]
-        # ⚠ Current baseline: missing field is not rejected server-side.
-        # This test should be updated when DD-TASK-004 adds schema validation.
-
-    def test_current_behavior_tool_invalid_frequency(
-            self, mock_llm_factory, client, auth_headers):
-        """Current behavior: enum-violating ``frequency`` → still accepted."""
-        mock_llm_factory(tools_return={
-            "habit_name": "测试",
-            "frequency": "not_a_valid_frequency",
-            "time_period": "Evening",
-        })
-        r = client.post("/ai/parse-habit", json={"text": "测试"},
-                        headers=auth_headers)
-        assert r.status_code == 200
-        data = r.get_json()
-        assert data["success"] is True
-        assert data["habit"]["frequency"] == "not_a_valid_frequency"
-
-    def test_current_behavior_tool_wrong_type_habit_name(
-            self, mock_llm_factory, client, auth_headers):
-        """Current behavior: integer ``habit_name`` → still accepted."""
-        mock_llm_factory(tools_return={
-            "habit_name": 123,
-            "frequency": "Every day this week",
-            "time_period": "Evening",
-        })
-        r = client.post("/ai/parse-habit", json={"text": "测试"},
-                        headers=auth_headers)
-        assert r.status_code == 200
-        data = r.get_json()
-        assert data["success"] is True
-        assert data["habit"]["habit_name"] == 123
-
     def test_current_behavior_parse_habit_truthy_non_dict_result(
             self, mock_llm_factory, client, auth_headers):
-        """Route receives truthy non-dict tool result → caught as exception (``result.get("icon")`` fails).
+        """Arguments contains truthy non-dict → ``ToolValidationError``.
 
-        This test covers route-level behaviour when ``chat_with_tools()`` returns
-        a non-dict (e.g. a list).  The real ``llm_client.py:56`` parses JSON via
-        ``json.loads()`` first; that SDK-level parsing path is tested in DD-TASK-004.
+        ``tool_call(["not_a_dict"])`` wraps a list in the envelope.
+        ``validate_habit_fields()`` checks ``isinstance(result, dict)``
+        and rejects the non-dict arguments, returning a specific error.
         """
-        mock_llm_factory(tools_return=["not_a_dict"])
+        mock_llm_factory(tools_return=tool_call(["not_a_dict"]))
         r = client.post("/ai/parse-habit", json={"text": "每天跑步"},
                         headers=auth_headers)
         assert r.status_code == 200
         data = r.get_json()
         assert data["success"] is False
-        assert "LLM error" in data["message"]
+        assert data["message"] == "Tool result must be a dict"
 
     @pytest.mark.parametrize("tool_result", [
-        {},
-        [],
-        "",
-        0,
+        tool_call({}),
+        tool_call([]),
+        tool_call(""),
+        tool_call(0),
     ])
     def test_current_behavior_parse_habit_falsy_tool_result_cannot_parse(
             self, mock_llm_factory, client, auth_headers, tool_result):
-        """Current behavior: falsy non-None tool results → ``Could not parse``.
+        """Current behavior: falsy arguments → ``Could not parse``.
 
-        The pre-refactoring route used ``if result:`` to decide success, so
-        ``{}``, ``[]``, ``""``, and ``0`` all fell into the "Could not parse"
-        branch (not ``LLM error``).  This test preserves that boundary — it
-        should be reviewed when DD-TASK-004 adds proper schema validation.
+        ``arguments`` values ``{}``, ``[]``, ``""``, and ``0`` are all falsy,
+        so ``parse_habit_text()`` returns ``None`` → Route returns
+        ``"Could not parse"``.
         """
         mock_llm_factory(tools_return=tool_result)
         r = client.post("/ai/parse-habit", json={"text": "每天跑步"},
@@ -428,6 +394,353 @@ class TestParseHabit:
         assert data["success"] is False
         assert "Could not parse" in data.get("message", "")
         assert "LLM error" not in data.get("message", "")
+
+    # ── Tool/Field validation ─────────────────────────────────────
+
+    def test_parse_habit_unknown_tool_name(self, mock_llm_factory,
+                                           client, auth_headers):
+        """Unknown tool name → ``ToolValidationError``."""
+        mock_llm_factory(tools_return=tool_call(
+            {"habit_name": "x", "frequency": "Every day this week",
+             "time_period": "Morning"},
+            name="bad_tool",
+        ))
+        r = client.post("/ai/parse-habit", json={"text": "跑步"},
+                        headers=auth_headers)
+        assert r.status_code == 200
+        data = r.get_json()
+        assert data["success"] is False
+        assert "Unknown tool: bad_tool" in data["message"]
+
+    def test_parse_habit_rejects_missing_habit_name(
+            self, mock_llm_factory, client, auth_headers):
+        """Missing ``habit_name`` → ``ToolValidationError``."""
+        mock_llm_factory(tools_return=tool_call({
+            "frequency": "Every day this week",
+            "time_period": "Morning",
+        }))
+        r = client.post("/ai/parse-habit", json={"text": "跑步"},
+                        headers=auth_headers)
+        assert r.status_code == 200
+        data = r.get_json()
+        assert data["success"] is False
+        assert data["message"] == "habit_name is required"  # DD-TASK-004 explicit rejection
+
+    def test_parse_habit_rejects_non_string_habit_name(
+            self, mock_llm_factory, client, auth_headers):
+        """Non-string ``habit_name`` → ``ToolValidationError``."""
+        mock_llm_factory(tools_return=tool_call({
+            "habit_name": 123,
+            "frequency": "Every day this week",
+            "time_period": "Morning",
+        }))
+        r = client.post("/ai/parse-habit", json={"text": "测试"},
+                        headers=auth_headers)
+        assert r.status_code == 200
+        data = r.get_json()
+        assert data["success"] is False
+        assert data["message"] == "habit_name must be a string"
+
+    def test_parse_habit_rejects_empty_habit_name(
+            self, mock_llm_factory, client, auth_headers):
+        """Whitespace-only ``habit_name`` after trim → ``ToolValidationError``."""
+        mock_llm_factory(tools_return=tool_call({
+            "habit_name": "   ",
+            "frequency": "Every day this week",
+            "time_period": "Morning",
+        }))
+        r = client.post("/ai/parse-habit", json={"text": "测试"},
+                        headers=auth_headers)
+        assert r.status_code == 200
+        data = r.get_json()
+        assert data["success"] is False
+        assert data["message"] == "habit_name is required"
+
+    def test_parse_habit_rejects_long_habit_name(
+            self, mock_llm_factory, client, auth_headers):
+        """Oversized ``habit_name`` → ``ToolValidationError``."""
+        mock_llm_factory(tools_return=tool_call({
+            "habit_name": "x" * 65,
+            "frequency": "Every day this week",
+            "time_period": "Morning",
+        }))
+        r = client.post("/ai/parse-habit", json={"text": "测试"},
+                        headers=auth_headers)
+        assert r.status_code == 200
+        data = r.get_json()
+        assert data["success"] is False
+        assert data["message"] == "habit_name is too long (max 64)"
+
+    def test_parse_habit_rejects_missing_frequency(
+            self, mock_llm_factory, client, auth_headers):
+        """Missing ``frequency`` → ``ToolValidationError``."""
+        mock_llm_factory(tools_return=tool_call({
+            "habit_name": "x",
+            "time_period": "Morning",
+        }))
+        r = client.post("/ai/parse-habit", json={"text": "测试"},
+                        headers=auth_headers)
+        assert r.status_code == 200
+        data = r.get_json()
+        assert data["success"] is False
+        assert data["message"] == "frequency is required"
+
+    def test_parse_habit_rejects_non_string_frequency(
+            self, mock_llm_factory, client, auth_headers):
+        """Non-string ``frequency`` → ``ToolValidationError``."""
+        mock_llm_factory(tools_return=tool_call({
+            "habit_name": "x",
+            "frequency": 123,
+            "time_period": "Morning",
+        }))
+        r = client.post("/ai/parse-habit", json={"text": "测试"},
+                        headers=auth_headers)
+        assert r.status_code == 200
+        data = r.get_json()
+        assert data["success"] is False
+        assert data["message"] == "frequency must be a string"
+
+    def test_parse_habit_rejects_invalid_frequency(
+            self, mock_llm_factory, client, auth_headers):
+        """String ``frequency`` not in allowed set → ``ToolValidationError``."""
+        mock_llm_factory(tools_return=tool_call({
+            "habit_name": "x",
+            "frequency": "bad_freq",
+            "time_period": "Morning",
+        }))
+        r = client.post("/ai/parse-habit", json={"text": "测试"},
+                        headers=auth_headers)
+        assert r.status_code == 200
+        data = r.get_json()
+        assert data["success"] is False
+        assert data["message"] == "Invalid frequency: bad_freq"
+
+    def test_parse_habit_rejects_missing_time_period(
+            self, mock_llm_factory, client, auth_headers):
+        """Missing ``time_period`` → ``ToolValidationError``."""
+        mock_llm_factory(tools_return=tool_call({
+            "habit_name": "x",
+            "frequency": "Every day this week",
+        }))
+        r = client.post("/ai/parse-habit", json={"text": "测试"},
+                        headers=auth_headers)
+        assert r.status_code == 200
+        data = r.get_json()
+        assert data["success"] is False
+        assert data["message"] == "time_period is required"
+
+    def test_parse_habit_rejects_non_string_time_period(
+            self, mock_llm_factory, client, auth_headers):
+        """Non-string ``time_period`` → ``ToolValidationError``."""
+        mock_llm_factory(tools_return=tool_call({
+            "habit_name": "x",
+            "frequency": "Every day this week",
+            "time_period": 456,
+        }))
+        r = client.post("/ai/parse-habit", json={"text": "测试"},
+                        headers=auth_headers)
+        assert r.status_code == 200
+        data = r.get_json()
+        assert data["success"] is False
+        assert data["message"] == "time_period must be a string"
+
+    def test_parse_habit_rejects_invalid_time_period(
+            self, mock_llm_factory, client, auth_headers):
+        """String ``time_period`` not in allowed set → ``ToolValidationError``."""
+        mock_llm_factory(tools_return=tool_call({
+            "habit_name": "x",
+            "frequency": "Every day this week",
+            "time_period": "midnight",
+        }))
+        r = client.post("/ai/parse-habit", json={"text": "测试"},
+                        headers=auth_headers)
+        assert r.status_code == 200
+        data = r.get_json()
+        assert data["success"] is False
+        assert data["message"] == "Invalid time_period: midnight"
+
+    def test_parse_habit_rejects_non_string_icon(
+            self, mock_llm_factory, client, auth_headers):
+        """Non-string ``icon`` → ``ToolValidationError``."""
+        mock_llm_factory(tools_return=tool_call({
+            "habit_name": "x",
+            "frequency": "Every day this week",
+            "time_period": "Morning",
+            "icon": 42,
+        }))
+        r = client.post("/ai/parse-habit", json={"text": "测试"},
+                        headers=auth_headers)
+        assert r.status_code == 200
+        data = r.get_json()
+        assert data["success"] is False
+        assert data["message"] == "icon must be a string"
+
+    def test_parse_habit_rejects_long_icon(
+            self, mock_llm_factory, client, auth_headers):
+        """Oversized ``icon`` → ``ToolValidationError``."""
+        mock_llm_factory(tools_return=tool_call({
+            "habit_name": "x",
+            "frequency": "Every day this week",
+            "time_period": "Morning",
+            "icon": "f" * 33,
+        }))
+        r = client.post("/ai/parse-habit", json={"text": "测试"},
+                        headers=auth_headers)
+        assert r.status_code == 200
+        data = r.get_json()
+        assert data["success"] is False
+        assert data["message"] == "icon is too long (max 32)"
+
+    def test_parse_habit_rejects_invalid_icon(
+            self, mock_llm_factory, client, auth_headers):
+        """``icon`` not in ``_VALID_ICONS`` → ``ToolValidationError``."""
+        mock_llm_factory(tools_return=tool_call({
+            "habit_name": "x",
+            "frequency": "Every day this week",
+            "time_period": "Morning",
+            "icon": "not-an-icon",
+        }))
+        r = client.post("/ai/parse-habit", json={"text": "测试"},
+                        headers=auth_headers)
+        assert r.status_code == 200
+        data = r.get_json()
+        assert data["success"] is False
+        assert data["message"] == "Invalid icon: not-an-icon"
+
+    def test_parse_habit_rejects_non_string_note(
+            self, mock_llm_factory, client, auth_headers):
+        """Non-string ``note`` → ``ToolValidationError``."""
+        mock_llm_factory(tools_return=tool_call({
+            "habit_name": "x",
+            "frequency": "Every day this week",
+            "time_period": "Morning",
+            "note": 999,
+        }))
+        r = client.post("/ai/parse-habit", json={"text": "测试"},
+                        headers=auth_headers)
+        assert r.status_code == 200
+        data = r.get_json()
+        assert data["success"] is False
+        assert data["message"] == "note must be a string"
+
+    def test_parse_habit_rejects_long_note(
+            self, mock_llm_factory, client, auth_headers):
+        """Oversized ``note`` → ``ToolValidationError``."""
+        mock_llm_factory(tools_return=tool_call({
+            "habit_name": "x",
+            "frequency": "Every day this week",
+            "time_period": "Morning",
+            "note": "n" * 1025,
+        }))
+        r = client.post("/ai/parse-habit", json={"text": "测试"},
+                        headers=auth_headers)
+        assert r.status_code == 200
+        data = r.get_json()
+        assert data["success"] is False
+        assert data["message"] == "note is too long (max 1024)"
+
+    def test_parse_habit_extra_fields_discarded(
+            self, mock_llm_factory, client, auth_headers):
+        """Extra fields (``user_id``, ``owner_id``, ``is_admin``) are silently discarded."""
+        mock_llm_factory(tools_return=tool_call({
+            "habit_name": "x",
+            "frequency": "Every day this week",
+            "time_period": "Morning",
+            "user_id": 999,
+            "owner_id": "hacker",
+            "is_admin": True,
+            "extra": "should not appear",
+        }))
+        r = client.post("/ai/parse-habit", json={"text": "跑步"},
+                        headers=auth_headers)
+        assert r.status_code == 200
+        data = r.get_json()
+        assert data["success"] is True
+        assert "user_id" not in data["habit"]
+        assert "owner_id" not in data["habit"]
+        assert "is_admin" not in data["habit"]
+        assert "extra" not in data["habit"]
+        assert data["habit"]["habit_name"] == "x"
+
+    def test_parse_habit_icon_fas_fa_star_accepted(
+            self, mock_llm_factory, client, auth_headers):
+        """``icon="fas fa-star"`` is now a valid choice (added to ``ICON_CHOICES``)."""
+        mock_llm_factory(tools_return=tool_call({
+            "habit_name": "x",
+            "frequency": "Every day this week",
+            "time_period": "Morning",
+            "icon": "fas fa-star",
+        }))
+        r = client.post("/ai/parse-habit", json={"text": "测试"},
+                        headers=auth_headers)
+        assert r.status_code == 200
+        data = r.get_json()
+        assert data["success"] is True
+        assert data["habit"]["icon"] == "fas fa-star"
+
+    def test_parse_habit_note_missing_is_ok(
+            self, mock_llm_factory, client, auth_headers):
+        """Missing ``note`` → accepted (optional field)."""
+        mock_llm_factory(tools_return=tool_call({
+            "habit_name": "x",
+            "frequency": "Every day this week",
+            "time_period": "Morning",
+        }))
+        r = client.post("/ai/parse-habit", json={"text": "测试"},
+                        headers=auth_headers)
+        assert r.status_code == 200
+        data = r.get_json()
+        assert data["success"] is True
+        # note should not be in the habit or be empty string (depends on LLM)
+        # The key assertion is that it doesn't crash
+
+    def test_parse_habit_does_not_write_to_db(
+            self, mock_llm_factory, client, auth_headers, app):
+        """Successful parse returns a valid habit draft but does NOT write to DB."""
+        from app.extensions import db
+        from app.models import Habit
+        with app.app_context():
+            count_before = db.session.query(Habit).count()
+
+        mock_llm_factory(tools_return=tool_call({
+            "habit_name": "晨跑",
+            "frequency": "Every day this week",
+            "time_period": "Morning",
+        }))
+        r = client.post("/ai/parse-habit", json={"text": "每天早上跑步"},
+                        headers=auth_headers)
+        assert r.status_code == 200
+        payload = r.get_json()
+        assert payload["success"] is True
+        assert "habit" in payload
+        assert payload["habit"]["habit_name"] == "晨跑"
+
+        with app.app_context():
+            count_after = db.session.query(Habit).count()
+        assert count_after == count_before
+
+    def test_validation_failure_zero_writes(
+            self, mock_llm_factory, client, auth_headers, app):
+        """Validation failure returns expected error and does NOT create any Habit."""
+        from app.extensions import db
+        from app.models import Habit
+        with app.app_context():
+            count_before = db.session.query(Habit).count()
+
+        mock_llm_factory(tools_return=tool_call({
+            "frequency": "Every day this week",  # missing habit_name
+            "time_period": "Morning",
+        }))
+        r = client.post("/ai/parse-habit", json={"text": "跑步"},
+                        headers=auth_headers)
+        assert r.status_code == 200
+        payload = r.get_json()
+        assert payload["success"] is False
+        assert "habit_name is required" in payload["message"]
+
+        with app.app_context():
+            count_after = db.session.query(Habit).count()
+        assert count_after == count_before
 
 
 # ── Part 3: AI Report ────────────────────────────────────────────

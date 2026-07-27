@@ -13,6 +13,7 @@ ICON_CHOICES = [
     ('fas fa-running', 'running'),
     ('fas fa-swimmer', 'swimmer'),
     ('fas fa-bicycle', 'bicycle'),
+    ('fas fa-star', 'star'),
 ]
 
 TIME_PERIOD_CHOICES = [
