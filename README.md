@@ -1,379 +1,287 @@
 <div align="center">
   <h1>DailyDot</h1>
   <p>
-    <strong>AI 驱动的智能习惯追踪平台</strong>
+    <strong>Habit tracking with RAG, Function Calling, and AI reports</strong>
   </p>
   <p>
     <img src="https://img.shields.io/badge/Python-3.11-blue?logo=python" alt="Python 3.11">
     <img src="https://img.shields.io/badge/Flask-2.3-lightgrey?logo=flask" alt="Flask 2.3">
-    <img src="https://img.shields.io/badge/MySQL-8.0-blue?logo=mysql" alt="MySQL 8.0">
+    <img src="https://img.shields.io/badge/tests-147-passing-green" alt="147 tests">
     <img src="https://img.shields.io/badge/Docker-compose-2496ED?logo=docker" alt="Docker Compose">
-    <img src="https://img.shields.io/badge/LLM-DeepSeek%20%7C%20Tongyi-FF6F00" alt="LLM Support">
   </p>
 </div>
 
 ---
 
-## 目录
+## Project Overview
 
-- [项目简介](#项目简介)
-- [核心功能](#核心功能)
-- [技术栈](#技术栈)
-- [快速开始](#快速开始)
-- [配置说明](#配置说明)
-- [项目结构](#项目结构)
-- [API 概览](#api-概览)
-- [AI 功能](#ai-功能)
-- [测试](#测试)
-- [部署](#部署)
+DailyDot is a full-stack habit tracking web application with three AI-assisted features:
+
+- **RAG-based habit recommendation** — describe a goal, get structured suggestions
+- **Natural-language habit creation** — type "run every morning" → parsed into form fields
+- **AI weekly/monthly reports** — aggregated stats → narrative report in 3 tones
+
+Each AI feature has an explicit no-key fallback behavior. RAG recommendations use vector-based template suggestions, reports use a deterministic statistical summary, and natural-language habit parsing returns a not-configured response.
 
 ---
 
-## 项目简介
+## Core Features
 
-**DailyDot** 是一个全栈习惯追踪 Web 应用，帮助用户建立和维持良好习惯。用户可创建习惯、每日打卡、生成成就卡片、查看统计数据。项目集成了 **3 个 AI 功能**（RAG 习惯推荐、自然语言创建、智能周报），是一份面向 AI 应用岗求职的完整全栈作品。
+### Habit Management
+- Create / edit / delete habits (13 icon choices, configurable frequency and time period)
+- Daily check-in with timestamp and notes
+- Date-specific check-in and undo
+- Streak tracking, calendar view, annual heatmap
 
----
+### Todo Management
+- Create / edit / delete todos
+- One-click completion toggle
+- Sort-by-date listing
 
-## 核心功能
+### Achievement Cards
+- Random image + quote selection (Pexels API with Picsum fallback)
+- Canvas screenshot download
+- Card gallery
 
-### ✅ 习惯管理
-- 创建/编辑/删除习惯（支持 12 种图标、频率、时间段）
-- 每日打卡（含备注和时间戳）
-- 按日期打卡/取消打卡
-- 连续打卡天数统计
-- 习惯日历视图 & 年度热力图
-
-### 📋 待办管理
-- 创建/编辑/删除待办事项
-- 一键完成切换
-- 按日期排序查看
-
-### 🃏 成就卡片
-- AI 随机图片 + 励志名言生成
-- Pexels API 智能配图（自动降级 Picsum）
-- Canvas 截图下载
-- 日期选择与连续打卡天数展示
-- 卡片收藏画廊
-
-### 📊 数据统计
-- 14 天打卡趋势折线图（Chart.js）
-- 习惯完成率排名
-- 待办完成率
-- 年度日历热力图
-
-### 🤖 AI 功能
-- **RAG 习惯推荐**：输入目标 → 向量搜索知识库 → LLM 个性化建议
-- **自然语言创建**：输入"每周一三五早上7点跑步30分钟" → 自动解析创建
-- **AI 周报/月报**：自动统计数据 → LLM 生成分析报告（支持 3 种语气）
+### Statistics Dashboard
+- 14-day check-in trend chart (Chart.js)
+- Habit completion ranking
+- Annual calendar heatmap
 
 ---
 
-## 技术栈
+## AI Capabilities
 
-### 后端
-| 技术 | 用途 |
-|------|------|
-| Flask 2.3 | Web 框架 |
-| SQLAlchemy 2.0 | ORM 数据库映射 |
-| Flask-Migrate / Alembic | 数据库迁移 |
-| Flask-Login | 用户认证 |
-| Flask-WTF | 表单 & CSRF 保护 |
-| MySQL 8.0 / SQLite | 数据库（多环境） |
-| Redis | 缓存 / Celery 消息队列 |
+| Feature | Input | Processing | Output | Fallback |
+|---------|-------|------------|--------|----------|
+| RAG Recommendation | User goal string | sentence-transformers → cosine similarity → Top-1 relevance gate → LLM | Structured suggestions `[{name, reason}]` | Vector candidates or empty list |
+| NL Habit Parsing | Natural-language description | LLM Function Calling → tool name validation → argument validation | Structured field draft | Tool validation error or not-configured message |
+| AI Report | Report type + tone | Aggregated DB stats → LLM markdown | HTML report with 3 tone variants | Statistical summary markdown |
 
-### AI / ML
-| 技术 | 用途 |
-|------|------|
-| sentence-transformers | 中文/英文语义 Embedding |
-| FAISS / numpy | 向量相似度搜索 |
-| OpenAI SDK | LLM API 调用（兼容 DeepSeek、通义千问） |
-| Celery | 定时 AI 周报生成 |
+### RAG Flow
 
-### 前端
-| 技术 | 用途 |
-|------|------|
-| Tailwind CSS | UI 框架（CDN） |
-| Font Awesome 6.5 | 图标库 |
-| Chart.js | 数据可视化 |
-| html2canvas | 卡片截图下载 |
-| Alpine.js | 下拉菜单交互 |
-
-### DevOps
-| 技术 | 用途 |
-|------|------|
-| Docker + Compose | 容器化编排（Flask + MySQL + Redis + Celery） |
-| Gunicorn | WSGI 服务器 |
-| GitHub Actions | CI/CD |
-| pytest + coverage | 测试 & 覆盖率 |
-
----
-
-## 快速开始
-
-### 本地开发（SQLite）
-
-```bash
-# 1. 克隆仓库
-git clone https://github.com/yourusername/dailydot.git
-cd dailydot
-
-# 2. 安装依赖
-pip install -r requirements.txt
-
-# 3. 运行
-flask run
-# 或
-python run.py
+```mermaid
+flowchart TD
+  Goal["User Goal"] --> Embed["sentence-transformers encode"]
+  Embed --> Cosine["cosine similarity with 38 templates"]
+  Cosine --> Gate{"Top-1 score<br/>≥ 0.25?"}
+  Gate -->|No| Empty["return []<br/>No LLM call"]
+  Gate -->|Yes| Avail{"LLM<br/>available?"}
+  Avail -->|Yes| Chat["LLM → JSON → suggestions"]
+  Avail -->|No| FB["Vector fallback<br/>(template-based)"]
+  Chat -->|exception / invalid JSON| FB
 ```
 
-访问 http://localhost:5000
+### Function Calling Safety
 
-### Docker 部署（MySQL）
+```mermaid
+flowchart LR
+  Text["NL text"] --> TC["LLM tool call"]
+  TC --> TN["Tool name<br/>must be create_habit"]
+  TN --> Args["Arguments validated:<br/>type, enum, length, whitelist"]
+  Args --> Draft["Clean draft"]
+  Draft --> Confirm["User clicks 'Add'"]
+  Confirm --> DB["POST /habits/new<br/>create_habit(user_id=current_user.id)<br/>+ rollback on error"]
+```
+
+Key safety properties:
+- The LLM output never directly writes to the database
+- Tool name is verified server-side (`create_habit` only)
+- Arguments are validated (type, enum membership, length limits, extra-field stripping)
+- `user_id` is always `current_user.id` — AI output cannot spoof it
+- User explicitly confirms before database write
+
+---
+
+## RAG Evaluation
+
+A project-level evaluation set (16 cases, 38 templates) compares raw dot product with cosine similarity:
+
+| Metric | Raw Dot | Cosine |
+|--------|---------|--------|
+| Hit@1 | 53.8% | 61.5% |
+| Hit@3 | 76.9% | 76.9% |
+| MRR | 0.6885 | 0.7308 |
+| Relevant Top-1 score (min) | 6.07 | 0.407 |
+| Unrelated Top-1 score (max) | 5.29 | 0.181 |
+
+The eval set contains 13 relevant and 3 unrelated queries. Cosine similarity was selected based on these results; the Top-1 relevance threshold (0.25) sits between the positive and negative score distributions. The threshold is an initial value, not an optimal threshold.
+
+These are project-level regression metrics, not general benchmarks.
+
+Full evaluation report: [`docs/RAG_EVAL_BASELINE.md`](docs/RAG_EVAL_BASELINE.md)
+
+---
+
+## Key Design Decisions
+
+**How is retrieval implemented?**
+The knowledge base has 38 short habit templates. In-memory NumPy cosine similarity keeps retrieval logic transparent, and adds no infrastructure dependencies. If the template count grows significantly, switching to a dedicated vector store can be evaluated with clear performance data.
+
+**Why does the relevance threshold only check the Top-1 score?**
+The project evaluation established a clear Top-1 score gap on the current dataset. The threshold is therefore used only as a Top-1 query-level gate; candidates are not filtered individually after the query passes. The gate rejects clearly irrelevant queries while preserving the full Top-5 list for relevant ones, letting the LLM decide which templates are actually useful.
+
+**How is the AI workflow bounded?**
+DailyDot uses per-request single-step AI operations (recommend, parse, report) with explicit validation, deterministic fallbacks, and user confirmation before any database write. Each operation is independent; there is no multi-step agent loop or autonomous execution.
+
+---
+
+## Tech Stack
+
+### Backend
+| Technology | Purpose |
+|------------|---------|
+| Flask 2.3 | Web framework |
+| SQLAlchemy 2.0 | ORM |
+| Flask-Login | User authentication |
+| Flask-WTF | CSRF protection |
+| MySQL 8.0 / SQLite | Database (multi-environment) |
+
+### AI / ML
+| Technology | Purpose |
+|------------|---------|
+| sentence-transformers | Multilingual text embeddings |
+| NumPy | In-memory cosine similarity |
+| OpenAI SDK (compatible) | DeepSeek API for LLM calls |
+
+### Frontend
+| Technology | Purpose |
+|------------|---------|
+| Tailwind CSS | UI framework (CDN) |
+| Chart.js | Charts |
+| html2canvas | Card screenshot download |
+
+### DevOps
+| Technology | Purpose |
+|------------|---------|
+| Docker + Compose | Containerized deployment |
+| Gunicorn | WSGI server |
+| GitHub Actions | CI/CD |
+| pytest | Test runner |
+
+---
+
+## Getting Started
+
+### Local development (SQLite)
 
 ```bash
-# 1. 配置环境变量
+git clone https://github.com/AriesSure/DailyDot.git
+cd dailydot
+pip install -r requirements.txt
+flask run
+```
+
+Open http://localhost:5000
+
+### Docker deployment (MySQL)
+
+```bash
 cp .env.example .env
-# 编辑 .env 填入 SECRET_KEY 等
-
-# 2. 启动
-docker-compose up --build
-
-# 3. 初始化数据库
+docker-compose up -d --build web
 docker-compose exec web flask db upgrade
 ```
 
-访问 http://localhost:5000
+Open http://localhost:5000
+
+### Configuration
+
+Core environment variables:
+
+| Variable | Default | Required for AI features |
+|----------|---------|--------------------------|
+| `LLM_API_KEY` | — | Yes |
+| `LLM_BASE_URL` | `https://api.deepseek.com` | — |
+| `LLM_MODEL` | `deepseek-chat` | — |
+| `SECRET_KEY` | development default | Always (use a secure value for deployments) |
+
+Without `LLM_API_KEY`:
+- `/ai/recommend` returns template-based candidates or empty list
+- `/ai/parse-habit` returns "LLM not configured"
+- `/ai/report` returns a statistical summary
+
+### API Endpoints
+
+**AI** (`/ai`)
+| Method | Path | Purpose |
+|--------|------|---------|
+| POST | `/ai/recommend` | RAG habit recommendation |
+| POST | `/ai/parse-habit` | Natural-language habit parsing |
+| GET  | `/ai/report` | AI report generation |
+
+**Habits** (`/habits`)
+| Method | Path | Purpose |
+|--------|------|---------|
+| GET/POST | `/habits/new` | Create habit |
+| POST | `/habits/check_in/<id>` | Check in |
+| POST | `/habits/delete/<id>` | Delete |
+| GET | `/habits/` | List user's habits |
+
+Full API reference and additional endpoints are in the [source blueprints](app/blueprints/).
 
 ---
 
-## 配置说明
+## Testing
 
-环境变量通过 `.env` 文件或系统环境变量配置：
+```bash
+# Run all 147 tests
+pytest
 
-### 必需
-| 变量 | 说明 | 默认值 |
-|------|------|--------|
-| `SECRET_KEY` | Flask 密钥 | -（必须设置） |
+# Specific test files
+pytest tests/test_ai.py tests/test_ai_baseline.py -v
+pytest tests/test_habits.py -v
+```
 
-### 数据库
-| 变量 | 说明 | 默认值 |
-|------|------|--------|
-| `DATABASE_URL` | 数据库连接串 | `sqlite:///app/data/data.sqlite` |
-| `FLASK_ENV` | 运行环境 | `development` |
-
-`FLASK_ENV=development` → SQLite（本地开发）  
-`FLASK_ENV=testing` → 内存 SQLite（自动测试）  
-`FLASK_ENV=production` → 读取 `DATABASE_URL`（推荐 MySQL）
-
-### AI 功能（可选）
-| 变量 | 说明 | 默认值 |
-|------|------|--------|
-| `LLM_API_KEY` | LLM API 密钥 | -（不配置则降级为纯本地） |
-| `LLM_BASE_URL` | API 地址 | `https://api.deepseek.com` |
-| `LLM_MODEL` | 模型名 | `deepseek-chat` |
-| `PEXELS_API_KEY` | 卡片配图 API 密钥 | - |
-
-> **AI 降级策略**：未配置 `LLM_API_KEY` 时，推荐功能返回向量匹配结果，解析功能提示未配置，报告功能展示纯数据统计。
+The test suite includes:
+- AI behavior baseline (mock-based, no real LLM calls)
+- Tool validation and rejection
+- RAG similarity and k-guard
+- Data isolation (User A cannot see User B's data)
+- Offline guard (no real embedding model or LLM in CI)
+- Fallback path testing
 
 ---
 
-## 项目结构
+## Limitations
+
+- The RAG evaluation set has 16 cases (13 relevant, 3 unrelated) — adequate for a project-level regression baseline but not a general benchmark
+- The embedding model (`paraphrase-multilingual-MiniLM-L12-v2`) runs in-process; no vector database
+- The knowledge base contains 38 habit templates; adding new templates requires a code change and embedding rebuild
+- Celery-based scheduled reports are partially implemented (generated but not persisted)
+- No streaming or async LLM support
+
+---
+
+## Project Structure
 
 ```
 DailyDot/
 ├── app/
-│   ├── __init__.py              # 应用入口
-│   ├── factory.py               # create_app() 工厂
-│   ├── config.py                # 多环境配置
-│   ├── extensions.py            # 惰性加载扩展
-│   ├── logging_config.py        # 日志配置
-│   ├── error_handlers.py        # HTTP 错误处理
-│   ├── models.py                # ORM 模型（User/Habit/Record/Todo/Card）
-│   ├── forms.py                 # WTForms 表单
-│   ├── data/
-│   │   ├── quotes.json          # 名言数据
-│   │   └── habit_embeddings.pkl # 向量索引缓存
-│   ├── utils/
-│   │   ├── constants.py         # 共享常量
-│   │   ├── query_helpers.py     # 查询辅助
-│   │   └── json_response.py     # 统一 JSON 响应
-│   ├── services/
-│   │   ├── habit_service.py     # 习惯业务逻辑
-│   │   ├── record_service.py    # 打卡业务逻辑
-│   │   ├── todo_service.py      # 待办业务逻辑
-│   │   ├── card_service.py      # 卡片业务逻辑
-│   │   └── statistics_service.py
+│   ├── factory.py             # create_app() factory
+│   ├── models.py              # User, Habit, Record, Todo, Card
 │   ├── ai/
-│   │   ├── knowledge_base.py    # 50+ 习惯知识库
-│   │   ├── vector_store.py      # 向量搜索
-│   │   ├── llm_client.py        # LLM 统一客户端
-│   │   └── prompt_templates.py  # Prompt 模板
+│   │   ├── service.py         # AI orchestration (recommend, parse, report)
+│   │   ├── vector_store.py    # sentence-transformers + cosine search
+│   │   ├── llm_client.py      # OpenAI-compatible LLM client
+│   │   └── prompt_templates.py
 │   ├── blueprints/
-│   │   ├── auth/   → /auth      # 认证
-│   │   ├── main/   → /          # 主页
-│   │   ├── habits/ → /habits    # 习惯
-│   │   ├── todos/  → /todos     # 待办
-│   │   ├── cards/  → /cards     # 卡片
-│   │   ├── stats/  → /stats     # 统计
-│   │   └── ai/     → /ai        # AI 功能
-│   ├── templates/               # Jinja2 模板
-│   └── static/                  # 静态资源
+│   │   ├── habits/ → /habits
+│   │   ├── ai/     → /ai
+│   │   └── ...
+│   ├── services/              # Business logic layer
+│   └── templates/             # Jinja2 templates
 ├── tests/
-│   ├── conftest.py              # pytest fixtures
-│   ├── test_models.py
-│   ├── test_auth.py
-│   ├── test_habits.py
-│   ├── test_todos.py
-│   ├── test_cards.py
-│   └── test_ai.py
-├── migrations/                  # Alembic 迁移
-├── Dockerfile
-├── docker-compose.yml
-├── celery_app.py                # Celery 定时任务
-├── .env.example
-└── .github/workflows/ci.yml     # CI/CD
-```
-
----
-
-## API 概览
-
-### 认证 `/auth`
-| 方法 | 路径 | 说明 |
-|------|------|------|
-| GET/POST | `/auth/login` | 登录 |
-| GET/POST | `/auth/register` | 注册 |
-| GET | `/auth/logout` | 登出 |
-| GET/POST | `/auth/change_pw` | 修改密码 |
-| GET | `/auth/account` | 账户中心 |
-
-### 习惯 `/habits`
-| 方法 | 路径 | 说明 |
-|------|------|------|
-| GET | `/habits/` | 我的习惯列表 |
-| GET/POST | `/habits/new` | 创建习惯 |
-| GET | `/habits/view/<id>` | 习惯详情 |
-| GET/POST | `/habits/edit/<id>` | 编辑习惯 |
-| POST | `/habits/delete/<id>` | 删除习惯 |
-| POST | `/habits/check_in/<id>` | 今日打卡 |
-| POST | `/habits/checkin_by_date/<id>` | 按日期打卡 |
-| POST | `/habits/uncheck_by_date/<id>` | 取消打卡 |
-| GET | `/habits/checkin_logs/<id>` | 打卡日志 |
-
-### 待办 `/todos`
-| 方法 | 路径 | 说明 |
-|------|------|------|
-| GET/POST | `/todos/new` | 创建待办 |
-| POST | `/todos/complete/<id>` | 完成切换 |
-| POST | `/todos/edit/<id>` | 编辑待办 |
-| POST | `/todos/delete/<id>` | 删除待办 |
-| GET | `/todos/list` | 待办列表 |
-
-### 卡片 `/cards`
-| 方法 | 路径 | 说明 |
-|------|------|------|
-| GET | `/cards/new` | 创建卡片 |
-| POST | `/cards/api/card/save` | 保存卡片 |
-| GET | `/cards/api/card/quote/<cat>` | 随机名言 |
-| GET | `/cards/api/card/image/<cat>` | 随机图片 |
-| DELETE | `/cards/api/card/<id>` | 删除卡片 |
-| GET | `/cards/stack` | 卡片收藏 |
-
-### 统计 `/stats`
-| 方法 | 路径 | 说明 |
-|------|------|------|
-| GET | `/stats/` | 统计面板 |
-| GET | `/stats/annual/<id>` | 年度热力图 |
-
-### AI `/ai`
-| 方法 | 路径 | 说明 |
-|------|------|------|
-| POST | `/ai/recommend` | RAG 习惯推荐 |
-| POST | `/ai/parse-habit` | 自然语言创建 |
-| GET | `/ai/report` | AI 周报/月报 |
-
----
-
-## AI 功能
-
-### 1. RAG 习惯推荐
-
-```
-用户输入目标 → sentence-transformers 编码 → FAISS 向量检索 Top-5
-→ LLM 生成个性化建议 → 一键创建习惯
-```
-
-- **降级策略**：无 `LLM_API_KEY` 时直接返回向量匹配结果
-- **知识库**：50+ 中英双语习惯模板（健康、健身、学习、效率、正念、社交）
-
-### 2. 自然语言创建
-
-```
-用户输入 "每周一三五早上7点跑步30分钟"
-→ LLM Function Calling → 结构化数据 → 一键创建
-```
-
-- 支持中英文输入
-- 自动提取：习惯名称、频率、时间段、图标、备注
-
-### 3. AI 周报/月报
-
-```
-自动汇总周期数据 → LLM 生成 Markdown 报告 → 多彩渲染展示
-```
-
-- 3 种语气：教练（coach）、朋友（friend）、分析师（analyst）
-- 降级策略：无 `LLM_API_KEY` 时展示纯数据统计
-
----
-
-## 测试
-
-```bash
-# 运行全部测试
-pytest
-
-# 带覆盖率报告
-pytest --cov=app --cov-report=term-missing
-
-# 运行特定测试
-pytest tests/test_habits.py -v
-```
-
-**测试覆盖**：48 个用例，涵盖模型、认证、习惯 CRUD、打卡逻辑、待办 CRUD、卡片 API、AI 端点。
-
----
-
-## 部署
-
-### Docker Compose（推荐）
-
-```bash
-# 1. 配置环境
-cp .env.example .env
-# 编辑 SECRET_KEY, LLM_API_KEY 等
-
-# 2. 启动全部服务
-docker-compose up -d --build
-
-# 3. 初始化数据库
-docker-compose exec web flask db upgrade
-
-# 4. 查看日志
-docker-compose logs -f web
-```
-
-启动后访问 `http://localhost:5000`
-
-### 手动部署
-
-```bash
-# 生产环境依赖
-pip install gunicorn
-
-# 启动
-gunicorn --bind 0.0.0.0:5000 --workers 4 "app:app"
+│   ├── test_ai.py             # 9 offline fallback tests
+│   ├── test_ai_baseline.py    # 57 AI behavior tests
+│   ├── test_habits.py         # 14 habit CRUD + write safety tests
+│   ├── test_vector_store.py   # 19 similarity + k-guard tests
+│   └── ...                    # models, auth, todos, cards, client, eval fixture
+├── scripts/
+│   └── eval_rag.py            # Local RAG evaluation (not in CI)
+└── docs/
+    ├── AI_ARCHITECTURE_AUDIT.md
+    ├── AI_DECISIONS.md
+    └── RAG_EVAL_BASELINE.md
 ```
 
 ---
