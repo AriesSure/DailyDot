@@ -14,6 +14,7 @@ Not covered (delegated to later tasks):
 """
 
 import json
+import logging
 import pytest
 from datetime import date, timedelta, datetime
 
@@ -988,3 +989,86 @@ class TestRecommendEdgeCases:
         data = r.get_json()
         assert data["source"] == "llm"
         assert data["suggestions"] == [123, "abc"]
+
+
+# ── Part 5: Reliability & Logging (DD-TASK-006) ──────────────────
+
+
+class TestAIFallbackLogging:
+    """caplog assertions on privacy-safe AI fallback events."""
+
+    def test_recommend_malformed_json_logs_fallback(self, mock_llm_factory,
+                                                    mock_vector, client,
+                                                    auth_headers, caplog):
+        """Malformed JSON triggers ai.recommend.fallback log with no user content."""
+        mock_llm_factory(chat_return="not json")
+        caplog.set_level(logging.INFO)
+        r = client.post("/ai/recommend", json={"goal": "健康"},
+                        headers=auth_headers)
+        assert r.status_code == 200
+        found = any("ai.recommend.fallback" in rec.getMessage() for rec in caplog.records)
+        assert found, "Expected ai.recommend.fallback in logs"
+        for rec in caplog.records:
+            msg = rec.getMessage()
+            if "ai.recommend" in msg:
+                assert "健康" not in msg, "Goal text leaked into log"
+                assert "not json" not in msg, "Raw content leaked into log"
+
+    def test_recommend_exception_logs_fallback(self, mock_llm_factory,
+                                               mock_vector, client,
+                                               auth_headers, caplog):
+        """LLM exception logs ai.recommend.fallback."""
+        mock_llm_factory(chat_side_effect=RuntimeError("timeout"))
+        caplog.set_level(logging.INFO)
+        client.post("/ai/recommend", json={"goal": "健康"},
+                    headers=auth_headers)
+        found = any("llm_exception" in rec.getMessage() for rec in caplog.records)
+        assert found, "Expected llm_exception in fallback log"
+        for rec in caplog.records:
+            msg = rec.getMessage()
+            if "llm_exception" in msg:
+                assert "timeout" not in msg, "Exception message leaked"
+
+    def test_report_exception_logs_fallback(self, mock_llm_factory,
+                                            client, auth_headers, caplog):
+        """LLM exception in report logs ai.report.fallback with reason."""
+        mock_llm_factory(chat_side_effect=RuntimeError("timeout"))
+        caplog.set_level(logging.INFO)
+        client.get("/ai/report?type=weekly&tone=coach")
+        found = any("ai.report.fallback" in rec.getMessage() for rec in caplog.records)
+        assert found, "Expected ai.report.fallback in logs"
+        for rec in caplog.records:
+            if "ai.report.fallback" in rec.getMessage():
+                assert "timeout" not in rec.getMessage(), "Exception text leaked"
+
+    def test_report_empty_response_logs_fallback(self, mock_llm_factory,
+                                                  client, auth_headers, caplog):
+        """Empty LLM response in report logs ai.report.fallback reason=empty_response."""
+        mock_llm_factory(chat_return="")
+        caplog.set_level(logging.INFO)
+        client.get("/ai/report?type=weekly&tone=coach")
+        found = any("empty_response" in rec.getMessage() for rec in caplog.records)
+        assert found, "Expected empty_response in fallback log"
+
+    def test_parse_rejection_logs_tool_validation(self, mock_llm_factory,
+                                                   client, auth_headers, caplog):
+        """Missing habit_name triggers ai.parse.rejected log, user text not in log."""
+        mock_llm_factory(tools_return=tool_call({
+            "frequency": "Every day this week",
+            "time_period": "Morning",
+        }))
+        caplog.set_level(logging.INFO)
+        r = client.post("/ai/parse-habit", json={"text": "每天早上跑步"},
+                        headers=auth_headers)
+        assert r.status_code == 200
+        assert r.get_json()["success"] is False
+        found_rejected = False
+        for rec in caplog.records:
+            msg = rec.getMessage()
+            if "ai.parse.rejected" in msg:
+                found_rejected = True
+                assert "tool_validation_error" in msg
+                assert "ToolValidationError" in msg
+                assert "每天早上跑步" not in msg, "User text leaked into log"
+                assert "Every day this week" not in msg, "Tool arg value leaked into log"
+        assert found_rejected, "Expected ai.parse.rejected log entry"

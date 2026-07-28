@@ -1,15 +1,12 @@
 """AI service layer — route orchestration, prompt building, LLM calling, fallback.
 
-Separates AI use-case logic from HTTP concerns (request parsing, auth,
-response rendering).  Each public function receives its dependencies
-(LLM client, vector store) as explicit parameters rather than importing
-them — this keeps the existing monkeypatch-based test suite working
-without path changes.
-
 DD-TASK-003: AI service boundary refactoring.
+DD-TASK-006: privacy-safe fallback logging.
 """
 
 import json
+import logging
+import math
 from datetime import date, timedelta
 
 from app.extensions import db
@@ -22,6 +19,8 @@ from app.ai.prompt_templates import (
 from app.models import Habit, Record
 from app.services.statistics_service import get_habit_stats, get_todo_stats
 from app.utils.constants import FREQUENCY_CHOICES, TIME_PERIOD_CHOICES, ICON_CHOICES
+
+_log = logging.getLogger(__name__)
 
 
 # ── Validation constants ─────────────────────────────────────────
@@ -46,10 +45,8 @@ def validate_habit_fields(result: object) -> dict:
     if not isinstance(result, dict):
         raise ToolValidationError("Tool result must be a dict")
 
-    # 1. Whitelist: drop extra fields
     clean = {k: v for k, v in result.items() if k in _ALLOWED_FIELDS}
 
-    # 2. habit_name — required, string, non-empty, ≤64
     if "habit_name" not in clean:
         raise ToolValidationError("habit_name is required")
     hn = clean["habit_name"]
@@ -62,7 +59,6 @@ def validate_habit_fields(result: object) -> dict:
         raise ToolValidationError("habit_name is too long (max 64)")
     clean["habit_name"] = hn
 
-    # 3. frequency — required, string, enum
     if "frequency" not in clean:
         raise ToolValidationError("frequency is required")
     freq = clean["frequency"]
@@ -72,7 +68,6 @@ def validate_habit_fields(result: object) -> dict:
         raise ToolValidationError(f"Invalid frequency: {freq}")
     clean["frequency"] = freq
 
-    # 4. time_period — required, string, enum
     if "time_period" not in clean:
         raise ToolValidationError("time_period is required")
     tp = clean["time_period"]
@@ -82,7 +77,6 @@ def validate_habit_fields(result: object) -> dict:
         raise ToolValidationError(f"Invalid time_period: {tp}")
     clean["time_period"] = tp
 
-    # 5. icon — optional, string, ≤32, must be valid
     if "icon" in clean:
         ic = clean["icon"]
         if not isinstance(ic, str):
@@ -92,7 +86,6 @@ def validate_habit_fields(result: object) -> dict:
         if ic not in _VALID_ICONS:
             raise ToolValidationError(f"Invalid icon: {ic}")
 
-    # 6. note — optional, string, ≤1024
     if "note" in clean:
         nt = clean["note"]
         if not isinstance(nt, str):
@@ -144,16 +137,11 @@ def _fallback_report(stats: dict) -> str:
         f"- Best streak: {stats['streak']} days\n"
         f"- Missed days: {stats['missed_days']}\n"
         f"- Top habit: {stats['top_habit']}\n\n"
-        "> 💡 Configure `LLM_API_KEY` to get AI-powered analysis and suggestions."
+        "> \U0001f4a1 Configure `LLM_API_KEY` to get AI-powered analysis and suggestions."
     )
 
 
 # ── RAG threshold ────────────────────────────────────────────────
-# Initial value based on DD-TASK-005A eval dataset (16 cases):
-#   Relevant Top-1 cosine min ≈ 0.407
-#   Unrelated Top-1 cosine max ≈ 0.181
-# 0.25 sits between the two distributions.
-# Re-evaluate when knowledge base or embedding model changes.
 _RAG_MIN_COSINE_SCORE = 0.25
 # ─────────────────────────────────────────────────────────────────
 
@@ -162,53 +150,54 @@ _RAG_MIN_COSINE_SCORE = 0.25
 
 
 def recommend_habits(goal: str, llm, vector_store) -> tuple[list[object], str]:
-    """RAG-powered habit recommendation.
-
-    Returns (suggestions, source) where *source* is "llm" or "vector".
-    If the top-1 candidate score is below _RAG_MIN_COSINE_SCORE, returns
-    ([], "vector") immediately without calling the LLM.
-    Otherwise the full candidate list is passed to the LLM or fallback.
-    """
-    import math
-
+    """RAG-powered habit recommendation."""
     candidates = vector_store.search(goal, k=5)
+
+    if not candidates:
+        _log.info("ai.recommend.fallback reason=no_candidates source=vector candidate_count=0")
+        return [], "vector"
 
     top_score = candidates[0].get("score") if candidates else None
 
     if not isinstance(top_score, (int, float)):
+        _log.info("ai.recommend.fallback reason=bad_score_type source=vector candidate_count=%d", len(candidates))
         return [], "vector"
 
     top_score = float(top_score)
 
     if not math.isfinite(top_score):
+        _log.info("ai.recommend.fallback reason=bad_score_value source=vector candidate_count=%d", len(candidates))
         return [], "vector"
 
     if top_score < _RAG_MIN_COSINE_SCORE:
+        _log.info("ai.recommend.fallback reason=below_threshold source=vector candidate_count=%d top_score=%.3f", len(candidates), top_score)
         return [], "vector"
+
     if not llm.available:
+        _log.info("ai.recommend.fallback reason=llm_unavailable source=vector candidate_count=%d", len(candidates))
         return _build_vector_fallback(goal, candidates), "vector"
+
     try:
         messages = recommendation_prompt(goal, candidates)
         raw = llm.chat(messages, temperature=0.7)
         suggestions = _parse_json_list(raw)
         if suggestions:
+            _log.info("ai.recommend.completed source=llm candidate_count=%d", len(candidates))
             return suggestions, "llm"
-    except Exception:
+    except Exception as exc:
+        _log.info("ai.recommend.fallback reason=llm_exception error_type=%s source=vector candidate_count=%d", type(exc).__name__, len(candidates))
         pass
+
+    _log.info("ai.recommend.fallback reason=invalid_json source=vector candidate_count=%d", len(candidates))
     return _build_vector_fallback(goal, candidates), "vector"
+
 
 def parse_habit_text(text: str, llm) -> dict | None:
     """Parse a natural-language habit description into structured fields.
 
-    Returns a validated dict with ``habit_name``, ``frequency``, ``time_period``,
-    ``icon``, and optionally ``note``.  ``icon`` defaults to ``"fas fa-star"``
-    when missing.
-
     Returns ``None`` when the LLM is unavailable or makes no tool call.
     Raises ``ToolValidationError`` for invalid fields.
-    Raises on LLM API errors (``RuntimeError`` for multi-tool-call, etc.);
-    the caller is responsible for catching and returning an appropriate
-    JSON error response.
+    Raises on LLM API errors (``RuntimeError`` for multi-tool-call, etc.).
     """
     if not llm.available:
         return None
@@ -219,33 +208,23 @@ def parse_habit_text(text: str, llm) -> dict | None:
         raise
     if raw is None:
         return None
-    # Tool name verification
-    if raw["name"] != "create_habit":
-        raise ToolValidationError(f"Unknown tool: {raw['name']}")
-    result = raw["arguments"]
-    if not result:
-        return None
-    # Validate + normalize
-    clean = validate_habit_fields(result)
+    try:
+        if raw["name"] != "create_habit":
+            raise ToolValidationError(f"Unknown tool: {raw['name']}")
+        result = raw["arguments"]
+        if not result:
+            return None
+        clean = validate_habit_fields(result)
+    except ToolValidationError:
+        _log.info("ai.parse.rejected reason=tool_validation_error error_type=ToolValidationError")
+        raise
     if not clean.get("icon"):
         clean["icon"] = "fas fa-star"
     return clean
 
 
 def generate_report_data(user_id: int, report_type: str) -> dict:
-    """Gather all statistics for an AI report.
-
-    Complete owner of:
-      - *report_type* → *period_days* mapping (weekly→7, monthly→30)
-      - Date-range calculation
-      - All database queries (habits, records, todos)
-      - Streak, missed-days, and completion-rate computation
-      - Stats-dict construction
-
-    Does **not** access Flask ``request`` or the LLM.
-    Returns a dict with keys: ``period``, ``total_habits``, ``total_checkins``,
-    ``completion_rate``, ``streak``, ``missed_days``, ``top_habit``.
-    """
+    """Gather all statistics for an AI report."""
     period_days = 7 if report_type == "weekly" else 30
     end = date.today()
     start = end - timedelta(days=period_days)
@@ -257,7 +236,6 @@ def generate_report_data(user_id: int, report_type: str) -> dict:
     ).count()
     total_todos, completed_todos, todo_rate = get_todo_stats(user_id)
 
-    # Streak and top habit
     streak = 0
     top_habit = "N/A"
     habit_stats = get_habit_stats(user_id)
@@ -280,7 +258,6 @@ def generate_report_data(user_id: int, report_type: str) -> dict:
                 else:
                     break
 
-    # Missed days
     if habits:
         checkin_dates = {
             r.checkin_date for r in
@@ -310,12 +287,19 @@ def generate_report_text(stats: dict, report_type: str, tone: str, llm) -> str:
     """Generate an AI report narrative from pre-computed statistics.
 
     Returns a markdown string.  Falls back to ``_fallback_report(stats)``
-    when the LLM is unavailable or the API call fails.
+    when the LLM is unavailable or the API call fails, or when the LLM
+    returns an empty/whitespace response.
     """
     if not llm.available:
+        _log.info("ai.report.fallback reason=llm_unavailable")
         return _fallback_report(stats)
     try:
         messages = report_prompt(stats, period=report_type, tone=tone)
-        return llm.chat(messages, temperature=0.7)
-    except Exception:
+        raw = llm.chat(messages, temperature=0.7)
+        if not raw or not raw.strip():
+            _log.info("ai.report.fallback reason=empty_response")
+            return _fallback_report(stats)
+        return raw
+    except Exception as exc:
+        _log.info("ai.report.fallback reason=llm_exception error_type=%s", type(exc).__name__)
         return _fallback_report(stats)
