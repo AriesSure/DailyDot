@@ -262,6 +262,49 @@ class TestRecommend:
         assert len(mock_llm.chat_calls) == 0
         assert len(mock_vector.search_calls) == 0
 
+    # ── Relevance threshold ──────────────────────────────────────
+
+    def test_recommend_no_relevant_candidates_returns_empty(
+            self, mock_llm_factory, mock_vector, monkeypatch, client, auth_headers):
+        """All candidates below 0.25 → ``([], "vector")``, LLM not called."""
+        mock_llm = mock_llm_factory(chat_return='[{"name":"x","reason":"y"}]')
+        # All candidates below threshold (0.1 < 0.25)
+        low_candidates = [dict(c, score=0.1) for c in FIXED_CANDIDATES[:3]]
+        mock_vector.search = lambda query, k=5: low_candidates
+
+        # Guard: these must never be called when gate rejects the query
+        def _fail(*a, **kw):
+            raise AssertionError("recommendation_prompt or _build_vector_fallback called after gate reject")
+        monkeypatch.setattr("app.ai.service.recommendation_prompt", _fail)
+        monkeypatch.setattr("app.ai.service._build_vector_fallback", _fail)
+
+        r = client.post("/ai/recommend", json={"goal": "unrelated"},
+                        headers=auth_headers)
+        assert r.status_code == 200
+        data = r.get_json()
+        assert data["success"] is True
+        assert data["suggestions"] == []
+        assert data["source"] == "vector"
+        assert len(mock_llm.chat_calls) == 0
+
+    def test_recommend_threshold_boundary(
+            self, mock_llm_factory, mock_vector, client, auth_headers):
+        """Score 0.25 passes Top-1 gate; low-score candidate (0.24) reaches the LLM."""
+        mock_llm = mock_llm_factory(chat_return='[{"name":"晨跑","reason":"ok"}]')
+        candidates = [dict(FIXED_CANDIDATES[0], score=0.25),
+                      dict(FIXED_CANDIDATES[1], score=0.24)]
+        mock_vector.search = lambda query, k=5: candidates
+        r = client.post("/ai/recommend", json={"goal": "健康"},
+                        headers=auth_headers)
+        assert r.status_code == 200
+        data = r.get_json()
+        assert data["success"] is True
+        assert data["source"] == "llm"
+        # Low-score candidate (0.24) reached the LLM prompt, not filtered
+        assert len(mock_llm.chat_calls) == 1
+        prompt = mock_llm.chat_calls[0]["messages"][1]["content"]
+        assert "阅读 30 分钟" in prompt, "Low-score candidate (0.24) missing from LLM prompt — would be filtered out by candidate-level gate"
+
 
 # ── Part 2: NL Habit Parsing (Function Calling) ──────────────────
 

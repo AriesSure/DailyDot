@@ -148,16 +148,43 @@ def _fallback_report(stats: dict) -> str:
     )
 
 
+# ── RAG threshold ────────────────────────────────────────────────
+# Initial value based on DD-TASK-005A eval dataset (16 cases):
+#   Relevant Top-1 cosine min ≈ 0.407
+#   Unrelated Top-1 cosine max ≈ 0.181
+# 0.25 sits between the two distributions.
+# Re-evaluate when knowledge base or embedding model changes.
+_RAG_MIN_COSINE_SCORE = 0.25
+# ─────────────────────────────────────────────────────────────────
+
+
 # ── Public use-case functions ────────────────────────────────────
 
 
 def recommend_habits(goal: str, llm, vector_store) -> tuple[list[object], str]:
     """RAG-powered habit recommendation.
 
-    Returns ``(suggestions, source)`` where *source* is ``"llm"`` or ``"vector"``.
-    Falls back to pure vector results when the LLM is unavailable or fails.
+    Returns (suggestions, source) where *source* is "llm" or "vector".
+    If the top-1 candidate score is below _RAG_MIN_COSINE_SCORE, returns
+    ([], "vector") immediately without calling the LLM.
+    Otherwise the full candidate list is passed to the LLM or fallback.
     """
+    import math
+
     candidates = vector_store.search(goal, k=5)
+
+    top_score = candidates[0].get("score") if candidates else None
+
+    if not isinstance(top_score, (int, float)):
+        return [], "vector"
+
+    top_score = float(top_score)
+
+    if not math.isfinite(top_score):
+        return [], "vector"
+
+    if top_score < _RAG_MIN_COSINE_SCORE:
+        return [], "vector"
     if not llm.available:
         return _build_vector_fallback(goal, candidates), "vector"
     try:
@@ -169,7 +196,6 @@ def recommend_habits(goal: str, llm, vector_store) -> tuple[list[object], str]:
     except Exception:
         pass
     return _build_vector_fallback(goal, candidates), "vector"
-
 
 def parse_habit_text(text: str, llm) -> dict | None:
     """Parse a natural-language habit description into structured fields.

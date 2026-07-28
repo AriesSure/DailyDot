@@ -1,17 +1,16 @@
 """Pure-behaviour tests for HabitVectorStore.search().
 
-DD-TASK-005A: Uses fixed 2-d vectors to test similarity, Top-K, and edge
-cases without loading a real SentenceTransformer model.
+DD-TASK-005B: Uses fixed 2-d vectors to test cosine similarity, Top-K,
+k guard, and edge cases without loading a real SentenceTransformer model.
 """
 
 import math
 import numpy as np
 import pytest
-from app.ai.vector_store import HabitVectorStore
+from app.ai.vector_store import HabitVectorStore, _normalize_rows
 
 
 # ── Fixed 2-d test vectors ────────────────────────────────────────
-# Dot products are fully deterministic given these values.
 
 _SMALL_TEMPLATES = [
     {"name": "a", "frequency": "Every day", "time_period": "Morning",
@@ -22,18 +21,17 @@ _SMALL_TEMPLATES = [
      "icon": "fas fa-star", "category": "fitness", "tags": ["c"]},
 ]
 
-# Embeddings arranged so that:
-#   query_good → scores ≈ [1.0, 0.8, 0.0] (a ≈ cosine, b ≈ 0.8, c ≈ 0)
-#   query_zero → scores = [0.0, 0.0, 0.0]
+# Non-unit-length embeddings — search normalises at runtime, so raw dot
+# order differs from cosine order.
+#   doc A: direction (1,0), norm 3.0  → cosine to query = 1.0
+#   doc B: direction (0.7,0.7), norm 10.0 → raw dot = 20, cosine ≈ 0.71
+# Raw dot order: B, A, C
+# Cosine order:  A, B, C
 _SMALL_EMBEDDINGS = np.array([
-    [1.0, 0.0],  # template a
-    [0.8, 0.2],  # template b
-    [0.0, 1.0],  # template c
+    [3.0,  0.0],    # doc A — large norm, aligned with [1,0]
+    [7.0,  7.0],    # doc B — even larger norm
+    [0.0,  1.0],    # doc C
 ], dtype=np.float64)
-
-_QUERY_GOOD = np.array([[1.0, 0.0]], dtype=np.float64)      # scores: 1.0, 0.8, 0.0
-_QUERY_ZERO = np.array([[0.0, 0.0]], dtype=np.float64)       # scores: 0.0, 0.0, 0.0
-_QUERY_UNREL = np.array([[-0.9, -0.8]], dtype=np.float64)    # scores: -0.9, -0.88, -0.8
 
 
 class FakeModel:
@@ -41,10 +39,8 @@ class FakeModel:
     def encode(self, texts, show_progress_bar=False):
         if isinstance(texts, str):
             texts = [texts]
-        return np.array([
-            [1.0, 0.0],     # matches _QUERY_GOOD
-            [0.0, 0.0],
-        ][:len(texts)] * len(texts), dtype=np.float64)
+        # Return _SMALL_EMBEDDINGS-scaled query — query aligned with doc A
+        return np.array([[1.0, 0.0]] * len(texts), dtype=np.float64)
 
 
 # ── Fixtures ─────────────────────────────────────────────────────
@@ -52,12 +48,7 @@ class FakeModel:
 
 @pytest.fixture
 def store():
-    """A ``HabitVectorStore`` instance with fake 2-d data.
-
-    Bypasses the real singleton by using ``object.__new__()`` and sets
-    internal attributes directly so that no SentenceTransformer, pickle
-    cache, or Hugging Face resource is accessed.
-    """
+    """A ``HabitVectorStore`` instance with fake 2-d data."""
     s = object.__new__(HabitVectorStore)
     s.model = FakeModel()
     s.templates = _SMALL_TEMPLATES
@@ -102,9 +93,25 @@ class TestSearchBasic:
         assert "tags" in r
         assert "score" in r
 
+    def test_search_uses_cosine_not_raw_dot(self, store):
+        """Search returns cosine ordering (A first), not raw dot ordering (B first)."""
+        results = store.search("x", k=3)
+        names = [r["name"] for r in results]
+        assert names[0] == "a", f"Expected 'a' first (cosine 1.0), got {names}"
+        # doc B has larger raw dot but smaller cosine → should be second
+        assert names.index("b") > names.index("a"), (
+            f"Raw-dot ordering would place B before A; got {names}"
+        )
+
+    def test_search_scores_in_cosine_range(self, store):
+        """Cosine scores should be in [-1, 1]."""
+        results = store.search("x", k=3)
+        for r in results:
+            assert -1.0 <= r["score"] <= 1.0
+
 
 class TestSearchEdgeCases:
-    """Boundary and edge-case behaviours (characterization)."""
+    """Boundary and edge-case behaviours."""
 
     def test_search_k_larger_than_templates(self, store):
         """``k > len(templates)`` safely returns all available."""
@@ -113,19 +120,30 @@ class TestSearchEdgeCases:
         assert len(results) == total
 
     def test_search_k_zero(self, store):
-        """``k=0`` returns an empty list (current behaviour)."""
+        """``k=0`` returns empty list, encoder NOT called."""
+        call_count = 0
+        original_encode = store.model.encode
+        def tracking_encode(*args, **kwargs):
+            nonlocal call_count
+            call_count += 1
+            return original_encode(*args, **kwargs)
+        store.model.encode = tracking_encode
         results = store.search("x", k=0)
         assert results == []
+        assert call_count == 0, f"Encoder called {call_count} time(s), expected 0"
 
     def test_search_k_negative(self, store):
-        """``k=-1`` — current numpy behaviour: returns 1 result from tailored slice.
-
-        ``np.argsort(scores)[::-1][:k]`` with ``k=-1`` acts as
-        ``scores[:-1]``, dropping the last element.  This is unlikely to be
-        the intended behaviour; DD-TASK-005B should add an explicit guard.
-        """
+        """``k=-1`` returns empty list, encoder NOT called."""
+        call_count = 0
+        original_encode = store.model.encode
+        def tracking_encode(*args, **kwargs):
+            nonlocal call_count
+            call_count += 1
+            return original_encode(*args, **kwargs)
+        store.model.encode = tracking_encode
         results = store.search("x", k=-1)
-        assert len(results) == len(store.templates) - 1
+        assert results == []
+        assert call_count == 0, f"Encoder called {call_count} time(s), expected 0"
 
     def test_search_empty_templates(self):
         """Zero templates → no crash, empty result list."""
@@ -137,30 +155,37 @@ class TestSearchEdgeCases:
         results = s.search("x", k=5)
         assert results == []
 
-    def test_search_zero_query_vector(self, store):
-        """Zero query vector → all scores are 0.0."""
+    def test_search_zero_norm_embeddings_raises(self):
+        """Zero-norm embeddings → ``_normalize_rows`` raises ``ValueError``."""
         s = object.__new__(HabitVectorStore)
         s.model = FakeModel()
-        s.templates = _SMALL_TEMPLATES
-        s._embeddings = _SMALL_EMBEDDINGS
+        s.templates = [_SMALL_TEMPLATES[0]]
+        s._embeddings = np.array([[0.0, 0.0]], dtype=np.float64)
         s._initialized = True
-        # Override encode for this test
-        def _fake_encode(texts, show_progress_bar=False):
-            return _QUERY_ZERO
-        s.model.encode = _fake_encode
-        results = s.search("x", k=3)
-        for r in results:
-            assert r["score"] == pytest.approx(0.0)
+        with pytest.raises(ValueError, match="zero-norm"):
+            s.search("x", k=1)
+
+    def test_search_zero_norm_query_raises(self, store):
+        """Zero-norm query → ``_normalize_rows`` raises ``ValueError``."""
+        def _zero_encode(texts, show_progress_bar=False):
+            return np.array([[0.0, 0.0]], dtype=np.float64)
+        store.model.encode = _zero_encode
+        with pytest.raises(ValueError, match="zero-norm"):
+            store.search("x", k=1)
+
+    def test_search_nan_embedding_raises(self):
+        """NaN embeddings → ``_normalize_rows`` raises ``ValueError``."""
+        s = object.__new__(HabitVectorStore)
+        s.model = FakeModel()
+        s.templates = [_SMALL_TEMPLATES[0]]
+        s._embeddings = np.array([[float("nan"), 0.0]], dtype=np.float64)
+        s._initialized = True
+        with pytest.raises(ValueError, match="NaN or Inf"):
+            s.search("x", k=1)
 
     def test_search_equal_scores_does_not_assume_tie_order(self, store):
-        """When scores are identical, any order is acceptable.
-
-        ``np.argsort`` does not guarantee stable tie-breaking without
-        ``kind='stable'``.  This test only asserts count and score
-        equality, not a specific ranking.
-        """
+        """When scores are identical, any order is acceptable."""
         s = object.__new__(HabitVectorStore)
-        # All embeddings are the same => all scores equal
         tie_embs = np.array([[0.5, 0.5], [0.5, 0.5], [0.5, 0.5]], dtype=np.float64)
         s.model = FakeModel()
         s.templates = _SMALL_TEMPLATES
@@ -169,29 +194,41 @@ class TestSearchEdgeCases:
         results = s.search("x", k=3)
         assert len(results) == 3
         scores = [r["score"] for r in results]
-        assert all(s == pytest.approx(0.5) for s in scores)
+        assert all(s == pytest.approx(0.7071, abs=1e-3) for s in scores)
 
-    def test_search_nan_embedding_current_behavior(self):
-        """NaN embeddings propagate through dot product → NaN score."""
-        s = object.__new__(HabitVectorStore)
-        nan_embs = np.array([[float("nan"), 0.0]], dtype=np.float64)
-        s.model = FakeModel()
-        s.templates = [_SMALL_TEMPLATES[0]]
-        s._embeddings = nan_embs
-        s._initialized = True
-        results = s.search("x", k=1)
-        assert math.isnan(results[0]["score"])
-
-    def test_search_dimension_mismatch_current_behavior(self):
+    def test_search_dimension_mismatch_raises(self, store):
         """Query with wrong dimension → ``np.dot`` raises ``ValueError``."""
-        s = object.__new__(HabitVectorStore)
-        s.model = FakeModel()
-        s.templates = _SMALL_TEMPLATES
-        s._embeddings = _SMALL_EMBEDDINGS
-        s._initialized = True
-        # Override encode to return wrong-shape query
         def _bad_encode(texts, show_progress_bar=False):
-            return np.array([[1.0, 0.0, 0.5]], dtype=np.float64)  # 3-d vs 2-d
-        s.model.encode = _bad_encode
+            return np.array([[1.0, 0.0, 0.5]], dtype=np.float64)
+        store.model.encode = _bad_encode
         with pytest.raises(ValueError, match="dim "):
-            s.search("x", k=1)
+            store.search("x", k=1)
+
+
+# ── _normalize_rows unit tests ───────────────────────────────────
+
+
+class TestNormalizeRows:
+    """Direct tests for the module-level ``_normalize_rows`` function."""
+
+    def test_normalize_returns_unit_vectors(self):
+        """L2-normalised vectors have unit norm."""
+        arr = np.array([[3.0, 4.0]], dtype=float)
+        result = _normalize_rows(arr)
+        norms = np.linalg.norm(result, axis=1)
+        assert np.allclose(norms, 1.0)
+
+    def test_normalize_nan_raises(self):
+        """NaN input raises ValueError."""
+        with pytest.raises(ValueError, match="NaN or Inf"):
+            _normalize_rows(np.array([[float("nan"), 1.0]], dtype=float))
+
+    def test_normalize_zero_norm_raises(self):
+        """Zero-norm row raises ValueError."""
+        with pytest.raises(ValueError, match="zero-norm"):
+            _normalize_rows(np.array([[0.0, 0.0]], dtype=float))
+
+    def test_normalize_inf_raises(self):
+        """Inf input raises ValueError."""
+        with pytest.raises(ValueError, match="NaN or Inf"):
+            _normalize_rows(np.array([[float("inf"), 1.0]], dtype=float))

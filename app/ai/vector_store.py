@@ -1,7 +1,4 @@
-"""Vector store for RAG — uses sentence-transformers + numpy cosine similarity.
-
-For production scale, replace with FAISS or ChromaDB.
-"""
+"""Vector store for RAG — uses sentence-transformers + explicit cosine similarity."""
 
 import os
 import pickle
@@ -15,6 +12,29 @@ from app.ai.knowledge_base import HABIT_TEMPLATES
 # Lightweight multilingual model — good for Chinese + English queries
 _MODEL_NAME = "paraphrase-multilingual-MiniLM-L12-v2"
 _INDEX_PATH = Path(__file__).resolve().parent.parent / "data" / "habit_embeddings.pkl"
+
+
+def _normalize_rows(embeddings):
+    """L2-normalise rows of a 2-d array.
+
+    Raises ``ValueError`` if NaN, Inf, or zero-norm rows are present.
+    """
+    array = np.asarray(embeddings, dtype=float)
+
+    if not np.all(np.isfinite(array)):
+        raise ValueError("Embeddings contain NaN or Inf values")
+
+    norms = np.linalg.norm(array, axis=1, keepdims=True)
+
+    if np.any(norms == 0):
+        raise ValueError("Cannot normalize zero-norm embeddings")
+
+    normalized = array / norms
+
+    if not np.all(np.isfinite(normalized)):
+        raise ValueError("Normalized embeddings contain NaN or Inf values")
+
+    return normalized
 
 
 class HabitVectorStore:
@@ -58,9 +78,20 @@ class HabitVectorStore:
             pickle.dump(self._embeddings, f)
 
     def search(self, query: str, k: int = 5) -> list[dict]:
-        """Return top-*k* most similar habit templates for *query*."""
+        """Return top-*k* most similar habit templates for *query* (explicit cosine)."""
+        if k <= 0:
+            return []
+
         query_emb = self.model.encode([query], show_progress_bar=False)
-        scores = np.dot(self._embeddings, query_emb.T).flatten()
+
+        # Normalise both document and query embeddings at runtime for cosine.
+        # Cache stores raw (non-normalised) embeddings; no cache migration needed.
+        document_embs = _normalize_rows(self._embeddings)
+        query_emb = _normalize_rows(query_emb)
+
+        scores = np.dot(document_embs, query_emb.T).flatten()
+        if not np.all(np.isfinite(scores)):
+            raise ValueError("Scores contain NaN or Inf values")
         top_indices = np.argsort(scores)[::-1][:k]
 
         results = []
