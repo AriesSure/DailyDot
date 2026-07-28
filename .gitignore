@@ -38,3 +38,7 @@ htmlcov/
 # Temp
 tmp/
 *.tmp
+# Local project planning and historical notes
+docs/AI_ARCHITECTURE_AUDIT.md
+docs/PROJECT_SCOPE.md
+docs/WORKLOG.md

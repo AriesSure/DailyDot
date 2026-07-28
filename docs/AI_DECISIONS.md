@@ -1,52 +1,46 @@
-# Decision Records
+# 架构决策记录
 
 
-## Decision: Keep NumPy Vector Search
+## 决策：保持 NumPy 向量检索
 
-Date:
-2026-07
+日期：2026-07
 
-Reason:
+原因：
 
-Knowledge base contains around 50 short habit templates.
-
-Current scale does not justify FAISS/ChromaDB.
-
-Evaluation quality improvement has higher priority.
+当前知识库包含 **38 条**短文本习惯模板。使用 NumPy 在内存中计算 cosine similarity，能够保持检索实现轻量、透明并易于测试。当前规模没有引入外部向量数据库的工程必要性。若模板数量显著增长，可重新评估 FAISS、ChromaDB 等方案。
 
 
-## Decision: No Multi-Agent
+## 决策：采用有边界的 AI 工作流
 
-Reason:
+日期：2026-07
 
-Current business scenario only requires bounded workflow.
+原因：
 
-Additional agents increase complexity without improving user value.
+当前业务场景仅需有边界的单步骤工作流：
+
+- RAG 推荐（召回 → 生成）
+- 受控 Function Calling（解析 → 校验 → 确认 → 写入）
+- AI 报告生成（统计 → 生成）
+
+各流程相互独立，有明确的校验、降级和用户确认边界。增加多步骤 Agent 不会在当前场景中带来可证明的用户价值，同时会增加测试和维护成本。
 
 
-## Decision: Switch to Cosine Similarity + Initial Relevance Threshold
+## 决策：切换到 Cosine Similarity + 初始 Relevance Threshold
 
-Date:
-2026-07-28
+日期：2026-07-28
 
-Reason:
+原因：
 
-DD-TASK-005A evaluation (16 cases, 38 templates) showed:
-- Cosine Hit@1: 61.5% vs Raw Dot Hit@1: 53.8%
-- Cosine MRR: 0.7308 vs Raw Dot MRR: 0.6885
-- Other Top-K metrics were similar or slightly better with cosine
+项目内置离线评估结果（16 cases，38 templates）显示：
 
-Cosine also provides a clear score gap between relevant queries
-(positive Top-1 min ~0.407) and unrelated queries (negative Top-1 max ~0.181),
-making threshold-based filtering feasible without complex reranking.
+- Cosine Hit@1：61.5%，优于 Raw Dot 的 53.8%
+- Cosine MRR：0.7308，优于 Raw Dot 的 0.6885
+- 其他 Top-K 指标持平或略优
 
-Initial threshold 0.25 is derived from the current eval dataset distribution.
-It sits between the positive and negative score ranges with comfortable margin.
-This is not claimed as optimal or universal; re-evaluate when the knowledge
-base or embedding model changes.
+Cosine 同时在相关查询（positive Top-1 min ≈ 0.407）与无关查询（negative Top-1 max ≈ 0.181）之间提供了清晰的分数分界，使得基于 threshold 的 query-level gate 成为可能。
 
-The threshold is applied only to the Top-1 retrieval score as a query-level
-relevance gate. If the query passes, the complete Top-5 candidate list is
-preserved for the LLM or vector fallback; no candidate-level filtering is
-performed.
-Implementation: runtime L2 normalisation in search() — no cache migration.
+Initial threshold 0.25 基于当前评估集的分数分布，位于正负区间之间，为初始值而非最优值。知识库或 embedding model 变化后应重新评估。
+
+该 threshold 仅用于 Top-1 检索分数的 query-level relevance gate。query 通过后完整保留 Top-5 候选列表，不逐项过滤。
+
+实现方式：`search()` 中运行时 L2 normalisation，不修改 cache 格式，无需 cache migration。
