@@ -6,7 +6,7 @@
   <p>
     <img src="https://img.shields.io/badge/Python-3.11-blue?logo=python" alt="Python 3.11">
     <img src="https://img.shields.io/badge/Flask-2.3-lightgrey?logo=flask" alt="Flask 2.3">
-    <img src="https://img.shields.io/badge/tests-147-passing-green" alt="147 tests">
+    <img src="https://img.shields.io/badge/tests-147%20passing-green" alt="147 tests">
     <img src="https://img.shields.io/badge/Docker-compose-2496ED?logo=docker" alt="Docker Compose">
   </p>
 </div>
