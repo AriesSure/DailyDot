@@ -168,6 +168,9 @@ def get_card_stack(user_id):
                  .order_by(Card.date.desc(), Card.id.desc())
                  .all())
     except OperationalError:
+        from flask import current_app
+        if current_app.testing:
+            raise
         db.create_all()
         cards = (db.session.query(Card)
                  .filter_by(user_id=user_id)

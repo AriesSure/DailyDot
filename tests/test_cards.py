@@ -1,5 +1,16 @@
 """Card endpoint tests — creation, quote API, stack view."""
 
+import pytest
+
+
+@pytest.fixture(autouse=True)
+def offline_card_image(monkeypatch):
+    """Exercise the endpoint without downloading external image assets."""
+    monkeypatch.setattr(
+        'app.blueprints.cards.routes.fetch_image',
+        lambda category, user_id: ('/static/images/001.jpg', 'test-local', 'Test'),
+    )
+
 
 class TestCardEndpoints:
     def test_new_card_page(self, client, auth_headers):

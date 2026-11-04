@@ -1,20 +1,62 @@
 """pytest fixtures — app, db, client, authenticated requests."""
 
 import pytest
+import socket
+import sqlite3
+import sqlite3.dbapi2
+
+from sqlalchemy.engine import Engine
 from app.factory import create_app
 from app.extensions import db as _db
+from tests.database_lifecycle import isolated_database
 
 
 @pytest.fixture(scope='function')
-def app():
+def app(offline_test_boundary):
     """Create a fresh testing app for each test."""
     application = create_app('testing')
     application.config['WTF_CSRF_ENABLED'] = False
-    with application.app_context():
-        _db.create_all()
+    with isolated_database(application, _db):
         yield application
-        _db.session.rollback()
-        _db.drop_all()
+
+
+@pytest.fixture(autouse=True)
+def offline_test_boundary(monkeypatch):
+    """Block and record external I/O, including errors swallowed by app fallback."""
+    attempts = []
+
+    def deny(*args, **kwargs):
+        attempts.append('external_io_attempt')
+        raise AssertionError('external_io_forbidden')
+
+    monkeypatch.setattr(socket.socket, 'connect', deny)
+    monkeypatch.setattr(socket, 'create_connection', deny)
+    original_connect = Engine.connect
+
+    def memory_connect(engine, *args, **kwargs):
+        if str(engine.url) != 'sqlite:///:memory:':
+            return deny()
+        return original_connect(engine, *args, **kwargs)
+
+    monkeypatch.setattr(Engine, 'connect', memory_connect)
+    original_sqlite = sqlite3.dbapi2.connect
+
+    def sqlite_memory_only(database, *args, **kwargs):
+        if database != ':memory:':
+            return deny()
+        return original_sqlite(database, *args, **kwargs)
+
+    monkeypatch.setattr(sqlite3, 'connect', sqlite_memory_only)
+    monkeypatch.setattr(sqlite3.dbapi2, 'connect', sqlite_memory_only)
+    import pymysql
+    monkeypatch.setattr(pymysql.connections.Connection, 'connect', deny)
+    import requests
+    monkeypatch.setattr(requests.sessions.Session, 'request', deny)
+    monkeypatch.setenv('LLM_API_KEY', '')
+    monkeypatch.setenv('HF_HUB_OFFLINE', '1')
+    monkeypatch.setenv('TRANSFORMERS_OFFLINE', '1')
+    yield
+    assert attempts == [], 'A test attempted external I/O, even if its error was caught.'
 
 
 @pytest.fixture(scope='function')

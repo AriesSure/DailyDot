@@ -26,8 +26,10 @@ def _make_fake_create(fake_message):
 
 
 @pytest.fixture
-def llm():
+def llm(monkeypatch):
     """A real LLMClient instance with a patched SDK ``create`` method."""
+    # The SDK validates credentials at construction, before request mocking.
+    monkeypatch.setenv('LLM_API_KEY', 'offline-test-key-not-a-real-credential')
     client = LLMClient()
     # Initialise the underlying _client so we can patch its method
     _ = client._get_client()
