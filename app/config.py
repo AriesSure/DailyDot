@@ -34,10 +34,8 @@ class DevelopmentConfig(Config):
 class TestingConfig(Config):
     TESTING = True
     SQLALCHEMY_ECHO = False
-    SQLALCHEMY_DATABASE_URI = (
-        os.environ.get('DATABASE_URL')
-        or 'sqlite:///:memory:'
-    )
+    # Test-only overrides are read and validated by the application factory.
+    SQLALCHEMY_DATABASE_URI = 'sqlite:///:memory:'
 
 
 class ProductionConfig(Config):

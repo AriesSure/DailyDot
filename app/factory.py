@@ -31,6 +31,10 @@ def create_app(config_name: str | None = None) -> Flask:
     app.jinja_env.undefined = StrictUndefined
     app.config.from_object(config_by_name[config_name])
 
+    if app.testing:
+        from app.testing_database import configure_testing_database
+        configure_testing_database(app.config)
+
     # ── Extensions ──────────────────────────────────────────────
     init_extensions(app)
 
@@ -87,6 +91,9 @@ def _ensure_dev_tables(app: Flask) -> None:
     Avoids ``cards``-table-not-found errors when Alembic migrations
     haven't been run yet.  Harmless to call repeatedly.
     """
+    if app.testing:
+        return
+
     try:
         with app.app_context():
             backend = db.engine.url.get_backend_name()
