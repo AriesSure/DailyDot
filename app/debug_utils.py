@@ -1,13 +1,33 @@
-from app import app
+from contextlib import contextmanager
 from app.extensions import db
 from app.models import User, Habit, Record, Todo, Card
 from flask_migrate import upgrade, init, migrate
-from flask import current_app
+from flask import current_app, has_app_context
 import os
 
+
+@contextmanager
+def database_management_context():
+    """Use the active application; resolve the default only without a context."""
+    if has_app_context():
+        application = current_app._get_current_object()
+    else:
+        from app import app as application
+
+    # Keep this outside callers' error handlers so refusal cannot be swallowed.
+    if application.testing:
+        raise RuntimeError('Database management is disabled in testing.')
+
+    if has_app_context():
+        yield application
+    else:
+        with application.app_context():
+            yield application
+
+
 def reset_db():
-    """Reset database - only use for development/testing"""
-    with app.app_context():
+    """Reset database - only use for explicitly requested database management."""
+    with database_management_context():
         try:
             db.drop_all()
             db.create_all()
@@ -44,7 +64,7 @@ def reset_db():
 
 def init_migrations():
     """Initialize database migrations - run this once to set up migrations"""
-    with app.app_context():
+    with database_management_context():
         try:
             # Check if migrations directory exists
             if not os.path.exists('migrations'):
@@ -57,7 +77,7 @@ def init_migrations():
 
 def upgrade_db():
     """Apply all pending migrations to update database structure"""
-    with app.app_context():
+    with database_management_context():
         try:
             upgrade()
             print("Database upgraded successfully")
@@ -66,7 +86,7 @@ def upgrade_db():
 
 def create_migration(message):
     """Create a new migration with the given message"""
-    with app.app_context():
+    with database_management_context():
         try:
             migrate(message=message)
             print(f"Migration '{message}' created successfully")

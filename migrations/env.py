@@ -1,9 +1,16 @@
 import logging
 from logging.config import fileConfig
 
-from flask import current_app
+from flask import current_app, has_app_context
 
 from alembic import context
+from alembic.util import CommandError
+
+if not has_app_context():
+    raise CommandError('Migration requires a Flask application context.')
+
+if current_app.testing:
+    raise CommandError('Alembic migrations are disabled in testing.')
 
 # this is the Alembic Config object, which provides
 # access to the values within the .ini file in use.

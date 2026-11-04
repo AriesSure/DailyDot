@@ -4,10 +4,14 @@ Database management script for DailyDot application.
 This script provides commands to manage database migrations and data.
 """
 
-import os
 import sys
-from app import app, db
-from app.debug_utils import init_migrations, upgrade_db, create_migration, reset_db
+from app.debug_utils import (
+    database_management_context,
+    init_migrations,
+    upgrade_db,
+    create_migration,
+    reset_db,
+)
 
 def main():
     if len(sys.argv) < 2:
@@ -22,7 +26,7 @@ def main():
 
     command = sys.argv[1].lower()
 
-    with app.app_context():
+    with database_management_context():
         if command == "init":
             print("Initializing database migrations...")
             init_migrations()
@@ -63,4 +67,4 @@ def main():
             print("Use 'python manage_db.py' to see available commands.")
 
 if __name__ == "__main__":
-    main() 
+    main()
