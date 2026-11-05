@@ -1,14 +1,33 @@
 """pytest fixtures — app, db, client, authenticated requests."""
 
 import pytest
-import socket
-import sqlite3
-import sqlite3.dbapi2
-
-from sqlalchemy.engine import Engine
 from app.factory import create_app
 from app.extensions import db as _db
 from tests.database_lifecycle import isolated_database
+from tests.network_boundary import NetworkBoundary, redact_test_report
+
+
+def pytest_sessionstart(session):
+    # Collection can import SDKs too: install before collecting any test module.
+    session.config._io_patch = pytest.MonkeyPatch()
+    session.config._io_boundary = NetworkBoundary()
+    session.config._io_boundary.install(session.config._io_patch)
+
+
+def pytest_sessionfinish(session, exitstatus):
+    if session.config._io_boundary.attempts:
+        session.exitstatus = 1
+        reporter = session.config.pluginmanager.get_plugin('terminalreporter')
+        if reporter:
+            reporter.write_line('Forbidden I/O recorded during test session.', red=True)
+    session.config._io_patch.undo()
+
+
+@pytest.hookimpl(hookwrapper=True)
+def pytest_runtest_makereport(item, call):
+    outcome = yield
+    report = outcome.get_result()
+    redact_test_report(report)
 
 
 @pytest.fixture(scope='function')
@@ -23,40 +42,13 @@ def app(offline_test_boundary):
 @pytest.fixture(autouse=True)
 def offline_test_boundary(monkeypatch):
     """Block and record external I/O, including errors swallowed by app fallback."""
-    attempts = []
-
-    def deny(*args, **kwargs):
-        attempts.append('external_io_attempt')
-        raise AssertionError('external_io_forbidden')
-
-    monkeypatch.setattr(socket.socket, 'connect', deny)
-    monkeypatch.setattr(socket, 'create_connection', deny)
-    original_connect = Engine.connect
-
-    def memory_connect(engine, *args, **kwargs):
-        if str(engine.url) != 'sqlite:///:memory:':
-            return deny()
-        return original_connect(engine, *args, **kwargs)
-
-    monkeypatch.setattr(Engine, 'connect', memory_connect)
-    original_sqlite = sqlite3.dbapi2.connect
-
-    def sqlite_memory_only(database, *args, **kwargs):
-        if database != ':memory:':
-            return deny()
-        return original_sqlite(database, *args, **kwargs)
-
-    monkeypatch.setattr(sqlite3, 'connect', sqlite_memory_only)
-    monkeypatch.setattr(sqlite3.dbapi2, 'connect', sqlite_memory_only)
-    import pymysql
-    monkeypatch.setattr(pymysql.connections.Connection, 'connect', deny)
-    import requests
-    monkeypatch.setattr(requests.sessions.Session, 'request', deny)
+    boundary = NetworkBoundary()
+    boundary.install(monkeypatch)
     monkeypatch.setenv('LLM_API_KEY', '')
     monkeypatch.setenv('HF_HUB_OFFLINE', '1')
     monkeypatch.setenv('TRANSFORMERS_OFFLINE', '1')
     yield
-    assert attempts == [], 'A test attempted external I/O, even if its error was caught.'
+    assert boundary.attempts == [], 'A test attempted external I/O, even if its error was caught.'
 
 
 @pytest.fixture(scope='function')

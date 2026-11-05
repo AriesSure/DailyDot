@@ -39,6 +39,8 @@ def forbidden(*args, **kwargs):
     attempts.append('forbidden_io_or_ddl')
     raise AssertionError('forbidden_io_or_ddl')
 socket.socket.connect = forbidden
+socket.socket.connect_ex = forbidden
+socket.socket.sendto = forbidden
 socket.create_connection = forbidden
 Engine.connect = forbidden
 Engine.raw_connection = forbidden
