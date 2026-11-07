@@ -1,9 +1,12 @@
 """Python-level test I/O guards; not an OS sandbox or CI authentication."""
 
 import os
+from pathlib import Path
+import re
 import socket
 import sqlite3
 import sqlite3.dbapi2
+import sys
 
 import pymysql
 import requests
@@ -21,6 +24,61 @@ def mysql_ci_url(environ=None):
     config = {'TESTING': True}
     configure_testing_database(config, environ)
     return validate_testing_database_config(config)
+
+
+def _local_file(filename):
+    """Resolve a plain local path without accepting links or SQLite URIs."""
+    try:
+        path = Path(filename).absolute()
+        if (path.anchor.startswith(('\\\\', '//'))
+                or any(':' in part for part in path.parts[1:])
+                or path.resolve() != path):
+            return None
+        if path.exists() and (not path.is_file() or path.stat().st_nlink != 1):
+            return None
+        return path
+    except (OSError, RuntimeError, ValueError):
+        return None
+
+
+def _coverage_data_file():
+    coverage = sys.modules.get('coverage')
+    active = coverage.Coverage.current() if coverage else None
+    if active is None:
+        return None
+    path = _local_file(active.config.data_file)
+    # Reserve coverage names. An override pointing at a business DB is not
+    # authorization to open it through the test boundary.
+    if path and re.fullmatch(r'\.coverage(?:\.[a-zA-Z0-9_-]+)?', path.name):
+        return path
+    return None
+
+
+def _coverage_sqlite_allowed(database, base, caller, uri):
+    storage = sys.modules.get('coverage.sqlitedb')
+    if base is None or storage is None:
+        return False
+    journal_probe = getattr(storage, 'check_hot_journal', None)
+    if caller.f_code is storage.SqliteDb._connect.__code__:
+        filename = caller.f_locals['self'].filename
+    elif journal_probe and caller.f_code is journal_probe.__code__:
+        filename = caller.f_locals['filename']
+    else:
+        return False
+    path = _local_file(filename)
+    if path is None or path.parent != base.parent:
+        return False
+    if path != base:
+        # pytest-cov saves a process-specific shard and a combine file.
+        host = re.escape(socket.gethostname().replace('.', '_'))
+        suffix = rf'\.{host}\.pid{os.getpid()}\.X[a-zA-Z0-9]+x(?:\.H[a-zA-Z0-9]+h)?(?:\.combine)?'
+        if not re.fullmatch(re.escape(base.name) + suffix, path.name):
+            return False
+    if database == filename:
+        return True
+    return uri and database in (
+        path.as_uri() + '?mode=ro', path.as_uri() + '?mode=ro&immutable=1',
+    )
 
 
 class NetworkBoundary:
@@ -70,6 +128,7 @@ class NetworkBoundary:
         original_raw = Engine.raw_connection
         original_sqlite = sqlite3.dbapi2.connect
         original_mysql = pymysql.connections.Connection.connect
+        coverage_data_file = _coverage_data_file()
 
         def connect(sock, address):
             if not self.tcp_allowed(address, sock):
@@ -100,7 +159,13 @@ class NetworkBoundary:
 
         def sqlite_connect(database, *args, **kwargs):
             if database != ':memory:':
-                return self.deny()
+                caller = sys._getframe(1)
+                # Per-test guards can wrap the session guard. Both check the
+                # original caller and their own captured coverage target.
+                while caller.f_code is sqlite_connect.__code__:
+                    caller = caller.f_back
+                if not _coverage_sqlite_allowed(database, coverage_data_file, caller, kwargs.get('uri') is True):
+                    return self.deny()
             return original_sqlite(database, *args, **kwargs)
 
         def mysql_connect(connection, sock=None):

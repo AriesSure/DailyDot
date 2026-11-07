@@ -1,7 +1,10 @@
 """Allowlist tests use fake transport functions: never open a MySQL socket."""
 
+import os
+from pathlib import Path
 import socket
 import sqlite3
+import sys
 from types import SimpleNamespace
 from unittest.mock import Mock
 
@@ -190,6 +193,91 @@ def test_explicit_dbapi_socket_and_sqlite_file_and_http_rejected(guarded):
     assert len(boundary.attempts) == 3
     originals['mysql'].assert_not_called()
     originals['sqlite'].assert_not_called()
+
+
+@pytest.fixture
+def coverage_guard(monkeypatch, tmp_path):
+    """Model coverage's SQLite call sites without making it a test dependency."""
+    path = tmp_path / '.coverage.local'
+    config = SimpleNamespace(data_file=str(path))
+    active = SimpleNamespace(config=config)
+
+    class SqliteDb:
+        def __init__(self, filename):
+            self.filename = str(filename)
+
+        def _connect(self, database=None):
+            return sqlite3.connect(database or self.filename, check_same_thread=False, uri=True)
+
+    def check_hot_journal(filename):
+        return sqlite3.connect(Path(filename).as_uri() + '?mode=ro', uri=True)
+
+    monkeypatch.setitem(sys.modules, 'coverage', SimpleNamespace(
+        Coverage=SimpleNamespace(current=lambda: active),
+    ))
+    monkeypatch.setitem(sys.modules, 'coverage.sqlitedb', SimpleNamespace(
+        SqliteDb=SqliteDb, check_hot_journal=check_hot_journal,
+    ))
+    original = Mock(return_value=object())
+    monkeypatch.setattr(sqlite3.dbapi2, 'connect', original)
+    NetworkBoundary().install(monkeypatch)
+    boundary = NetworkBoundary()
+    boundary.install(monkeypatch)
+    return SimpleNamespace(path=path, config=config, db=SqliteDb, probe=check_hot_journal,
+                           original=original, boundary=boundary)
+
+
+@pytest.mark.parametrize('kind', ['base', 'shard', 'combine', 'read-only', 'journal-probe'])
+def test_coverage_storage_can_open_only_its_local_output(coverage_guard, kind):
+    guard = coverage_guard
+    path = guard.path
+    if kind in ('shard', 'combine'):
+        host = socket.gethostname().replace('.', '_')
+        path = path.with_name(f'{path.name}.{host}.pid{os.getpid()}.Xabc123x')
+        if kind == 'combine':
+            path = path.with_name(path.name + '.combine')
+    if kind == 'journal-probe':
+        assert guard.probe(str(path)) is guard.original.return_value
+        guard.original.assert_called_once_with(path.as_uri() + '?mode=ro', uri=True)
+    else:
+        database = path.as_uri() + '?mode=ro&immutable=1' if kind == 'read-only' else str(path)
+        assert guard.db(path)._connect(database) is guard.original.return_value
+        guard.original.assert_called_once_with(database, check_same_thread=False, uri=True)
+    assert guard.boundary.attempts == []
+
+
+@pytest.mark.parametrize('target', ['another.db', 'nested/.coverage.local', '.coverage.local.unknown',
+                                    'file://remote.invalid/test.db?mode=ro'])
+def test_coverage_storage_cannot_open_unapproved_paths(coverage_guard, target):
+    guard = coverage_guard
+    filename = target if target.startswith('file:') else guard.path.parent / target
+    with pytest.raises(AssertionError, match='external_io_forbidden'):
+        guard.db(filename)._connect()
+    guard.original.assert_not_called()
+    assert guard.boundary.attempts == ['forbidden_test_io']
+
+
+def test_direct_sqlite_cannot_open_even_the_configured_coverage_file(coverage_guard):
+    guard = coverage_guard
+    for connect in (sqlite3.connect, sqlite3.dbapi2.connect):
+        with pytest.raises(AssertionError, match='external_io_forbidden'):
+            connect(str(guard.path), uri=True)
+    with pytest.raises(AssertionError, match='external_io_forbidden'):
+        guard.db(guard.path)._connect(guard.path.as_uri() + '?mode=rw')
+    guard.original.assert_not_called()
+    assert len(guard.boundary.attempts) == 3
+
+
+def test_coverage_configuration_cannot_authorize_a_business_database(coverage_guard):
+    guard = coverage_guard
+    guard.config.data_file = str(guard.path.with_name('business.db'))
+    with pytest.MonkeyPatch.context() as patch:
+        boundary = NetworkBoundary()
+        boundary.install(patch)
+        with pytest.raises(AssertionError, match='external_io_forbidden'):
+            guard.db(guard.config.data_file)._connect()
+        assert boundary.attempts == ['forbidden_test_io']
+    guard.original.assert_not_called()
 
 
 def test_mysql_connection_failure_does_not_fallback_or_expose_password(guarded):
