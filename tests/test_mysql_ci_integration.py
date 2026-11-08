@@ -8,6 +8,7 @@ import sqlalchemy as sa
 from app.extensions import db
 from app.factory import create_app
 from app.models import User, Habit, Record
+from app.testing_database import engine_url_matches_test_database_url
 from tests.database_lifecycle import isolated_database
 from tests.mysql_ci import inspect_server
 from tests.network_boundary import mysql_ci_url
@@ -27,9 +28,12 @@ def verified_mysql_url():
 
 def test_mysql_fixture_identity_grants_and_crud(verified_mysql_url, app):
     """Exercise the shared app fixture and its normal MySQL schema lifecycle."""
+    expected_engine = db.engine  # The app fixture keeps its application context active.
     with app.app_context():
         engine = db.engine
-        assert engine.url == verified_mysql_url
+        assert engine is expected_engine
+        target_matches = engine_url_matches_test_database_url(engine.url, verified_mysql_url)
+        assert target_matches, 'mysql_ci_engine_target_changed'
         database, account, version, scopes = inspect_server(engine)
         assert database == 'dailydot_test'
         assert account == 'dailydot_test@%'
@@ -65,6 +69,20 @@ def test_mysql_fixture_identity_grants_and_crud(verified_mysql_url, app):
         assert db.session.get(Record, record_id) is None
 
 
+def _close_with_observation(lifecycle, original_close, verified_mysql_url):
+    try:
+        if lifecycle.initialized:
+            target_matches = lifecycle._check_target() == (lifecycle.engine, verified_mysql_url, lifecycle.url)
+            assert target_matches, 'mysql_ci_cleanup_target_changed'
+            assert lifecycle.database.engine is lifecycle.engine
+    finally:
+        # The real close owns cleanup authorization and must release resources
+        # even if an observation fails or initialization never completed.
+        original_close(lifecycle)
+    assert lifecycle.cleanup_authorized is False
+    assert lifecycle.closed is True
+
+
 def test_mysql_authorized_cleanup_and_empty_schema(verified_mysql_url, monkeypatch):
     """Observe the existing lifecycle, then verify cleanup using a read-only engine."""
     from tests import database_lifecycle as lifecycle_module
@@ -79,16 +97,12 @@ def test_mysql_authorized_cleanup_and_empty_schema(verified_mysql_url, monkeypat
         original_initialize(lifecycle)
         assert lifecycle.initialized is True
         assert lifecycle.cleanup_authorized is True
-        assert lifecycle._check_target() == (lifecycle.engine, verified_mysql_url)
+        target_matches = lifecycle._check_target() == (lifecycle.engine, verified_mysql_url, lifecycle.url)
+        assert target_matches, 'mysql_ci_initialized_target_changed'
         observed.append(lifecycle)
 
     def close(lifecycle):
-        # _check_target is also called by the unmodified close before drop_all.
-        assert lifecycle._check_target() == (lifecycle.engine, verified_mysql_url)
-        assert db.engine is lifecycle.engine
-        original_close(lifecycle)
-        assert lifecycle.cleanup_authorized is False
-        assert lifecycle.closed is True
+        _close_with_observation(lifecycle, original_close, verified_mysql_url)
 
     monkeypatch.setattr(lifecycle_module.DatabaseLifecycle, 'initialize', initialize)
     monkeypatch.setattr(lifecycle_module.DatabaseLifecycle, 'close', close)

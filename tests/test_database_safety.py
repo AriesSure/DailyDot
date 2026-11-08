@@ -1,8 +1,9 @@
-"""Configuration and lifecycle tests; all MySQL engines here are fakes."""
+"""Configuration and lifecycle tests without MySQL connections."""
 
 from types import SimpleNamespace
 from unittest.mock import Mock
 
+import pymysql
 import pytest
 import sqlalchemy as sa
 from flask import Flask
@@ -14,9 +15,11 @@ from app.factory import create_app, _ensure_dev_tables
 from app.testing_database import (
     TestDatabaseSafetyError as SafetyError,
     configure_testing_database,
+    engine_url_matches_test_database_url,
     validate_testing_database_config,
 )
 from tests.database_lifecycle import DatabaseLifecycle, DatabaseLifecycleError, isolated_database
+from tests.test_mysql_ci_integration import _close_with_observation
 
 
 SECRET = 'fake_test_secret_123'
@@ -63,6 +66,7 @@ def test_both_ci_profiles_are_accepted_without_connecting(host, profile):
     {'SQLALCHEMY_DATABASE_URI': make_url(MYSQL).set(drivername='mysql')},
     {'SQLALCHEMY_DATABASE_URI': make_url(MYSQL).set(password='')},
     {'SQLALCHEMY_DATABASE_URI': make_url(MYSQL).update_query_dict({'host': 'remote.invalid'})},
+    {'SQLALCHEMY_DATABASE_URI': make_url(MYSQL).set(query={'charset': 'utf8mb4'})},
     {'TESTING': False},
 ])
 def test_invalid_config_rejected_without_leaking(change, capsys, caplog):
@@ -74,6 +78,81 @@ def test_invalid_config_rejected_without_leaking(change, capsys, caplog):
     output = str(caught.value) + captured.out + captured.err + caplog.text
     assert SECRET not in output
     assert MYSQL not in output
+
+
+@pytest.mark.parametrize('query', [{}, {'charset': 'utf8mb4'}])
+def test_engine_url_match_accepts_exact_mysql_forms(query):
+    configured = validate_testing_database_config(mysql_config())
+    assert engine_url_matches_test_database_url(configured.set(query=query), configured)
+    assert not configured.query
+
+
+@pytest.mark.parametrize('change', [
+    {'query': {'charset': 'utf8'}},
+    {'query': {'charset': 'latin1'}},
+    {'query': {'unix_socket': '/tmp/mysql.sock'}},
+    {'query': {'unknown': 'value'}},
+    {'query': {'charset': 'utf8mb4', 'unknown': 'value'}},
+    {'query': {'charset': ('utf8mb4', 'utf8')}},
+    {'username': 'other'}, {'password': 'different-fake-password'},
+    {'host': 'remote.invalid'}, {'port': 3307}, {'database': 'other'},
+    {'drivername': 'mysql+mysqldb'},
+])
+def test_engine_url_match_rejects_mysql_changes(change):
+    configured = validate_testing_database_config(mysql_config())
+    assert not engine_url_matches_test_database_url(configured.set(**change), configured)
+
+
+def test_engine_url_match_rejects_duplicate_charset():
+    configured = validate_testing_database_config(mysql_config())
+    duplicate = make_url(MYSQL + '?charset=utf8mb4&charset=utf8mb4')
+    assert duplicate.query['charset'] == ('utf8mb4', 'utf8mb4')
+    assert not engine_url_matches_test_database_url(duplicate, configured)
+
+
+@pytest.mark.parametrize('configured', [
+    make_url(MYSQL).set(query={'charset': 'utf8mb4'}),
+    make_url(MYSQL).set(host='remote.invalid'),
+    make_url(MYSQL).set(drivername='postgresql'),
+    make_url(MYSQL).set(password=''),
+    'not-a-url-' + SECRET,
+    None,
+])
+def test_engine_url_match_rejects_untrusted_configuration(configured):
+    assert not engine_url_matches_test_database_url(configured, configured)
+
+
+@pytest.mark.parametrize('candidate,allowed', [
+    ('sqlite:///:memory:', True),
+    ('sqlite:///existing.db', False),
+    ('sqlite:///:memory:?charset=utf8mb4', False),
+    ('sqlite:///:memory:?mode=memory', False),
+])
+def test_engine_url_match_keeps_sqlite_memory_exact(candidate, allowed):
+    configured = validate_testing_database_config(dict(TESTING=True, SQLALCHEMY_DATABASE_URI='sqlite:///:memory:'))
+    assert engine_url_matches_test_database_url(make_url(candidate), configured) is allowed
+
+
+def test_flask_sqlalchemy_mysql_engine_default_charset_without_connection(monkeypatch):
+    application = Flask(__name__)
+    application.config.update(mysql_config())
+    configured = validate_testing_database_config(application.config)
+    forbidden = Mock(side_effect=AssertionError('engine_creation_must_not_connect'))
+    monkeypatch.setattr(sa.engine.Engine, 'connect', forbidden)
+    monkeypatch.setattr(sa.engine.Engine, 'raw_connection', forbidden)
+    monkeypatch.setattr(pymysql.connections.Connection, 'connect', forbidden)
+
+    db.init_app(application)
+    with application.app_context():
+        engine = db.engine
+        try:
+            assert engine.url.query == {'charset': 'utf8mb4'}
+            assert validate_testing_database_config(application.config) == configured
+            assert not configured.query
+            assert engine_url_matches_test_database_url(engine.url, configured)
+        finally:
+            engine.dispose()
+    forbidden.assert_not_called()
 
 
 def test_factory_reads_test_environment_on_each_call_and_rejects_before_init(monkeypatch):
@@ -132,9 +211,11 @@ def fake_mysql(monkeypatch):
     return application, database, inspector, inspect
 
 
-def test_mysql_success_and_one_time_cleanup(fake_mysql):
+@pytest.mark.parametrize('query', [{}, {'charset': 'utf8mb4'}])
+def test_mysql_success_and_one_time_cleanup(fake_mysql, query):
     application, database, _, inspect = fake_mysql
     engine = database.engine
+    engine.url = engine.url.set(query=query)
     with isolated_database(application, database):
         inspect.assert_called_once_with(engine)
         database.create_all.assert_called_once_with(bind_key=None)
@@ -144,7 +225,7 @@ def test_mysql_success_and_one_time_cleanup(fake_mysql):
     engine.dispose.assert_called_once()
 
 
-@pytest.mark.parametrize('kind', ['table', 'view', 'create-fails', 'inspect-fails', 'bad-url'])
+@pytest.mark.parametrize('kind', ['table', 'view', 'create-fails', 'inspect-fails', 'bad-url', 'bad-charset'])
 def test_mysql_setup_failure_aborts_without_drop(fake_mysql, kind):
     application, database, inspector, inspect = fake_mysql
     engine = database.engine
@@ -156,6 +237,8 @@ def test_mysql_setup_failure_aborts_without_drop(fake_mysql, kind):
         database.create_all.side_effect = RuntimeError(SECRET)
     elif kind == 'inspect-fails':
         inspect.side_effect = RuntimeError(SECRET)
+    elif kind == 'bad-charset':
+        engine.url = engine.url.set(query={'charset': 'latin1'})
     else:
         engine.url = make_url(MYSQL).set(host='remote.invalid')
     with pytest.raises(pytest.exit.Exception, match='unsafe_mysql_test_initialization'):
@@ -163,25 +246,60 @@ def test_mysql_setup_failure_aborts_without_drop(fake_mysql, kind):
             pytest.fail('unsafe fixture yielded')
     database.drop_all.assert_not_called()
     engine.dispose.assert_called_once()
-    if kind == 'bad-url':
+    if kind in ('bad-url', 'bad-charset'):
         inspect.assert_not_called()
     if kind != 'create-fails':
         database.create_all.assert_not_called()
 
 
-@pytest.mark.parametrize('kind', ['config', 'engine', 'url', 'profile', 'authorization', 'app', 'drop'])
+@pytest.mark.parametrize('change', ['engine', 'charset'])
+def test_mysql_target_change_during_inspection_stops_before_ddl(fake_mysql, change):
+    application, database, inspector, inspect = fake_mysql
+    engine = database.engine
+
+    def inspect_then_change(current):
+        assert current is engine
+        if change == 'engine':
+            database.engines[None] = SimpleNamespace(url=engine.url, dispose=Mock())
+        else:
+            engine.url = engine.url.set(query={'charset': 'utf8mb4'})
+        return inspector
+
+    inspect.side_effect = inspect_then_change
+    with pytest.raises(pytest.exit.Exception, match='unsafe_mysql_test_initialization'):
+        with isolated_database(application, database):
+            pytest.fail('changed target yielded')
+    database.create_all.assert_not_called()
+    database.drop_all.assert_not_called()
+    database.session.remove.assert_called_once()
+    engine.dispose.assert_called_once()
+
+
+@pytest.mark.parametrize('kind', [
+    'config', 'config-password', 'engine', 'url', 'add-charset', 'remove-charset',
+    'profile', 'authorization', 'app', 'drop',
+])
 def test_mysql_cleanup_revalidates_all_ownership(fake_mysql, kind):
     application, database, _, _ = fake_mysql
     engine = database.engine
+    if kind == 'remove-charset':
+        engine.url = engine.url.set(query={'charset': 'utf8mb4'})
     with application.app_context():
         lifecycle = DatabaseLifecycle(application, database)
         lifecycle.initialize()
+        assert lifecycle.url == engine.url
         if kind == 'config':
             application.config['SQLALCHEMY_DATABASE_URI'] = MYSQL.replace('dailydot_test', 'other')
+        elif kind == 'config-password':
+            application.config['SQLALCHEMY_DATABASE_URI'] = make_url(MYSQL).set(password='changed-fake-password')
         elif kind == 'engine':
             database.engines[None] = SimpleNamespace(url=engine.url, dispose=Mock())
         elif kind == 'url':
             engine.url = engine.url.set(database='other')
+        elif kind == 'add-charset':
+            engine.url = engine.url.set(query={'charset': 'utf8mb4'})
+        elif kind == 'remove-charset':
+            engine.url = engine.url.set(query={})
         elif kind == 'profile':
             application.config['TEST_DATABASE_PROFILE'] = 'github-container-mysql'
         elif kind == 'authorization':
@@ -200,6 +318,59 @@ def test_mysql_cleanup_revalidates_all_ownership(fake_mysql, kind):
         engine.dispose.assert_called_once()
         lifecycle.close()
         engine.dispose.assert_called_once()
+
+
+@pytest.mark.parametrize('observation_fails,close_fails', [(False, False), (True, False), (False, True), (True, True)])
+def test_close_observation_preserves_release_and_errors(fake_mysql, observation_fails, close_fails):
+    _, database, _, _ = fake_mysql
+    url = make_url(MYSQL)
+    observation_error = DatabaseLifecycleError('observed_target_changed')
+    close_error = DatabaseLifecycleError('original_close_failed')
+    check = Mock(return_value=(database.engine, url, url),
+                 side_effect=observation_error if observation_fails else None)
+    lifecycle = SimpleNamespace(initialized=True, cleanup_authorized=False, closed=False,
+                                database=database, engine=database.engine, url=url, _check_target=check)
+
+    def release(current):
+        current.closed = True
+        if close_fails:
+            raise close_error
+
+    original_close = Mock(side_effect=release)
+    expected_error = close_error if close_fails else observation_error if observation_fails else None
+    if expected_error is None:
+        _close_with_observation(lifecycle, original_close, url)
+    else:
+        with pytest.raises(DatabaseLifecycleError) as caught:
+            _close_with_observation(lifecycle, original_close, url)
+        assert caught.value is expected_error
+        if observation_fails and close_fails:
+            assert caught.value.__context__ is observation_error
+    original_close.assert_called_once_with(lifecycle)
+    assert lifecycle.closed
+    assert lifecycle.cleanup_authorized is False
+    database.drop_all.assert_not_called()
+
+
+def test_close_observation_releases_after_failed_initialization(fake_mysql):
+    application, database, _, inspect = fake_mysql
+    engine = database.engine
+    engine.url = engine.url.set(query={'charset': 'latin1'})
+    lifecycle = DatabaseLifecycle(application, database)
+    with application.app_context():
+        with pytest.raises(DatabaseLifecycleError, match='initialization_failed'):
+            lifecycle.initialize()
+        assert lifecycle.engine is None
+        assert lifecycle.url is None
+        assert lifecycle.initialized is False
+        assert lifecycle.cleanup_authorized is False
+        _close_with_observation(lifecycle, DatabaseLifecycle.close, make_url(MYSQL))
+    assert lifecycle.closed
+    inspect.assert_not_called()
+    database.session.remove.assert_called_once()
+    database.create_all.assert_not_called()
+    database.drop_all.assert_not_called()
+    engine.dispose.assert_called_once()
 
 
 def test_mysql_cleanup_failure_aborts_run(fake_mysql):

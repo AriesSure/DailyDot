@@ -66,6 +66,24 @@ def validate_testing_database_config(config: Mapping) -> URL:
     return url
 
 
+def engine_url_matches_test_database_url(engine_url: URL, configured_url: URL) -> bool:
+    """Compare an Engine URL with the URL returned by the config validator.
+
+    Flask-SQLAlchemy 3.0.5 adds charset=utf8mb4 to MySQL engine options.
+    Compare against that exact derived URL, including credentials and query,
+    while keeping the original configuration query-free.
+    """
+    if not isinstance(engine_url, URL) or not isinstance(configured_url, URL) or configured_url.query:
+        return False
+    if configured_url == make_url(_MEMORY_URL):
+        return engine_url == configured_url
+    target = (configured_url.host, configured_url.port, configured_url.database, configured_url.username)
+    if (configured_url.drivername != 'mysql+pymysql' or not configured_url.password
+            or target not in _MYSQL_TARGETS.values()):
+        return False
+    return engine_url == configured_url or engine_url == configured_url.set(query={'charset': 'utf8mb4'})
+
+
 def configure_testing_database(config: MutableMapping,
                                environ: Mapping | None = None) -> None:
     """Read test-only settings on each factory call, then validate them.

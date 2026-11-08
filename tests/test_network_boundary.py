@@ -113,7 +113,7 @@ def test_sqlite_profile_blocks_mysql_even_on_loopback(guarded, monkeypatch):
     originals['create'].assert_not_called()
 
 
-@pytest.mark.parametrize('url', [MYSQL, 'sqlite:///:memory:'])
+@pytest.mark.parametrize('url', [MYSQL, make_url(MYSQL).set(query={'charset': 'utf8mb4'}), 'sqlite:///:memory:'])
 def test_engine_connect_and_raw_allow_validated_targets(guarded, url):
     boundary, originals = guarded
     engine = SimpleNamespace(url=make_url(url))
@@ -124,7 +124,18 @@ def test_engine_connect_and_raw_allow_validated_targets(guarded, url):
     assert boundary.attempts == []
 
 
-@pytest.mark.parametrize('url', ['sqlite:///never-open.db', 'mysql+pymysql://root:fake@127.0.0.1:3306/dailydot_test'])
+@pytest.mark.parametrize('url', [
+    'sqlite:///never-open.db', 'sqlite:///:memory:?mode=memory',
+    'mysql+pymysql://root:fake@127.0.0.1:3306/dailydot_test',
+    *[make_url(MYSQL).set(**change) for change in (
+        {'query': {'charset': 'utf8'}},
+        {'query': {'charset': ('utf8mb4', 'utf8mb4')}},
+        {'query': {'charset': 'utf8mb4', 'extra': 'value'}},
+        {'query': {'unix_socket': '/tmp/mysql.sock'}},
+        {'host': 'remote.invalid'}, {'port': 3307}, {'username': 'other'},
+        {'password': 'different-fake-password'}, {'database': 'other'},
+    )],
+])
 def test_engine_connect_and_raw_reject_untrusted_targets(guarded, url):
     boundary, originals = guarded
     engine = SimpleNamespace(url=make_url(url))
@@ -134,6 +145,25 @@ def test_engine_connect_and_raw_reject_untrusted_targets(guarded, url):
     assert len(boundary.attempts) == 2
     originals['engine'].assert_not_called()
     originals['raw'].assert_not_called()
+
+
+def test_active_app_accepts_only_its_mysql_charset_variant(guarded):
+    boundary, originals = guarded
+    application = Flask(__name__)
+    application.config.update(
+        TESTING=True, TEST_DATABASE_PROFILE='github-runner-mysql',
+        TEST_DATABASE_ALLOW_MYSQL='1', TEST_DATABASE_GITHUB_ACTIONS='true',
+        SQLALCHEMY_DATABASE_URI=MYSQL,
+    )
+    engine = SimpleNamespace(url=make_url(MYSQL).set(query={'charset': 'utf8mb4'}))
+    with application.app_context():
+        Engine.connect(engine)
+        application.config['SQLALCHEMY_DATABASE_URI'] = make_url(MYSQL).set(password='different-fake-password')
+        with pytest.raises(AssertionError, match='external_io_forbidden'):
+            Engine.raw_connection(engine)
+    originals['engine'].assert_called_once_with(engine)
+    originals['raw'].assert_not_called()
+    assert boundary.attempts == ['forbidden_test_io']
 
 
 @pytest.mark.parametrize('change', [

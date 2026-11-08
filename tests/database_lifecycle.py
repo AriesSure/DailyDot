@@ -6,7 +6,7 @@ import pytest
 import sqlalchemy as sa
 from flask import current_app, has_app_context
 
-from app.testing_database import validate_testing_database_config
+from app.testing_database import engine_url_matches_test_database_url, validate_testing_database_config
 
 
 class DatabaseLifecycleError(RuntimeError):
@@ -34,14 +34,15 @@ class DatabaseLifecycle:
         if set(engines) != {None}:
             raise DatabaseLifecycleError('test_database_engines_invalid')
         engine = self.database.engine
-        if engine.url != url:
+        engine_url = engine.url
+        if not engine_url_matches_test_database_url(engine_url, url):
             raise DatabaseLifecycleError('test_database_engine_target_changed')
         if self.engine is not None and (
-            engine is not self.engine or url != self.url
+            engine is not self.engine or engine_url != self.url
             or self.application.config['TEST_DATABASE_PROFILE'] != self.profile
         ):
             raise DatabaseLifecycleError('test_database_identity_changed')
-        return engine, url
+        return engine, url, engine_url
 
     def initialize(self):
         if self.engine is not None or self.closed:
@@ -57,11 +58,10 @@ class DatabaseLifecycle:
             # even invalid configuration can release already allocated resources.
             engines = dict(self.database.engines)
             self._owned_engines = tuple(engines.values())
-            validate_testing_database_config(self.application.config)
-            self.engine = engines.get(None)
-            self.url = self.engine.url if self.engine is not None else None
+            engine, _, engine_url = self._check_target()
+            self.engine = engine
+            self.url = engine_url
             self.profile = self.application.config['TEST_DATABASE_PROFILE']
-            engine, url = self._check_target()
             if self.mysql:
                 inspector = sa.inspect(engine)
                 if inspector.get_table_names() or inspector.get_view_names():

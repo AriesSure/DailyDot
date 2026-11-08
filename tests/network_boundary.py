@@ -13,7 +13,11 @@ import requests
 from flask import current_app, has_app_context
 from sqlalchemy.engine import Engine, make_url
 
-from app.testing_database import configure_testing_database, validate_testing_database_config
+from app.testing_database import (
+    configure_testing_database,
+    engine_url_matches_test_database_url,
+    validate_testing_database_config,
+)
 
 
 def mysql_ci_url(environ=None):
@@ -110,7 +114,7 @@ class NetworkBoundary:
         if engine.url == make_url('sqlite:///:memory:'):
             return True
         url = self.mysql_url()
-        if url is None or engine.url != url:
+        if url is None or not engine_url_matches_test_database_url(engine.url, url):
             return False
         if has_app_context():
             try:
