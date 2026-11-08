@@ -1,10 +1,14 @@
 """Cards blueprint — achievement card creation, API endpoints, and card stack."""
 
+from pathlib import PurePosixPath
+
 from flask import Blueprint, render_template, jsonify, redirect, url_for, flash, request
 from flask_login import current_user, login_required
+from werkzeug.exceptions import RequestEntityTooLarge
 
 from app.extensions import db, csrf
 from app.services.card_service import (
+    CardInputError,
     get_card_page_data,
     save_card,
     get_card_stack,
@@ -34,13 +38,17 @@ def new_card():
 @login_required
 def save_card_api():
     try:
-        result = save_card(current_user.id, request.get_json(force=True))
+        result = save_card(current_user.id, request.get_json(force=True, silent=True))
         if result.get('reason') == 'exists':
             return jsonify({'success': False, 'reason': 'exists'}), 200
         return jsonify({'success': True, **result})
-    except Exception as e:
+    except CardInputError as error:
+        return jsonify({'success': False, 'error': str(error)}), 400
+    except RequestEntityTooLarge:
+        return jsonify({'success': False, 'error': 'card_request_too_large'}), 413
+    except Exception:
         db.session.rollback()
-        return jsonify({'success': False, 'error': str(e)}), 500
+        return jsonify({'success': False, 'error': 'card_save_failed'}), 500
 
 
 @cards_bp.route('/api/card/today')
@@ -63,17 +71,17 @@ def get_today_card_meta():
 @cards_bp.route('/api/card/image/<category>')
 @login_required
 def get_card_image(category):
-    try:
-        local_url, source, photographer = fetch_image(category, current_user.id)
-        return jsonify({
-            'success': True,
-            'image_url': local_url,
-            'source': source,
-            'photographer': photographer,
-        })
-    except Exception as e:
-        fb = f"https://picsum.photos/400/400?random=__import__('random').randint(1,1000)"
-        return jsonify({'success': True, 'image_url': fb, 'source': 'picsum', 'error': str(e)})
+    image = fetch_image(category, current_user.id)
+    if image is None:
+        return jsonify({'success': False, 'error': 'card_image_unavailable'}), 502
+    local_url, source, photographer = image
+    return jsonify({
+        'success': True,
+        'image_url': local_url,
+        'image_id': PurePosixPath(local_url).stem,
+        'source': source,
+        'photographer': photographer,
+    })
 
 
 @cards_bp.route('/api/card/quote/<category>')

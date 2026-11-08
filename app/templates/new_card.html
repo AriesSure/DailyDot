@@ -134,7 +134,8 @@ document.addEventListener('DOMContentLoaded', function() {
     const saveCardBtn = document.getElementById('saveCard');
     const csrfMeta = document.querySelector('meta[name="csrf-token"]');
     const csrfToken = csrfMeta ? csrfMeta.getAttribute('content') : '';
-    let currentImageUrl = ''; // updated when image loads successfully
+    let currentImage = null;
+    let currentImageId = null;
 
     // Format and display the date with abbreviated names
     function formatDate() {
@@ -169,6 +170,18 @@ document.addEventListener('DOMContentLoaded', function() {
     // Save card
     saveCardBtn.addEventListener('click', saveCard);
 
+    function resetImagePreview() {
+        currentImage = null;
+        currentImageId = null;
+        cardBackground.style.backgroundImage = 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)';
+        cardBackground.style.opacity = '1';
+        cardBackground.style.transform = 'none';
+        cardBackground.style.filter = 'none';
+        refreshImageBtn.classList.remove('shimmer');
+        refreshImageBtn.disabled = false;
+        refreshImageBtn.innerHTML = '<i class="fas fa-sync-alt mr-2"></i>Refresh Image';
+    }
+
     function loadNewImage() {
         const categories = ['nature', 'abstract', 'minimal', 'gradient', 'geometric'];
         const category = categories[Math.floor(Math.random() * categories.length)];
@@ -198,7 +211,8 @@ document.addEventListener('DOMContentLoaded', function() {
 
                 img.onload = function() {
                     console.log('Image loaded successfully:', data.image_url);
-                    currentImageUrl = data.image_url;
+                    currentImage = img;
+                    currentImageId = data.image_id || null;
                     cardBackground.style.backgroundImage = `url(${data.image_url})`;
                     cardBackground.style.backgroundSize = 'cover';
                     cardBackground.style.backgroundPosition = 'center';
@@ -222,51 +236,25 @@ document.addEventListener('DOMContentLoaded', function() {
                     }, 1500);
                 };
 
-                img.onerror = function() {
-                    console.error('Failed to load image:', data.image_url);
-                    // Fallback to a default gradient
-                    cardBackground.style.backgroundImage = 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)';
-                    cardBackground.style.opacity = '1';
-
-                    // Reset button
-                    refreshImageBtn.disabled = false;
-                    refreshImageBtn.innerHTML = '<i class="fas fa-sync-alt mr-2"></i>Refresh Image';
-                };
+                img.onerror = resetImagePreview;
 
                 // Set a timeout to handle slow loading
                 setTimeout(() => {
                     if (!img.complete) {
-                        console.log('Image loading timeout, using fallback');
-                        cardBackground.style.backgroundImage = 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)';
-                        cardBackground.style.opacity = '1';
-
-                        // Reset button
-                        refreshImageBtn.disabled = false;
-                        refreshImageBtn.innerHTML = '<i class="fas fa-sync-alt mr-2"></i>Refresh Image';
+                        img.onload = null;
+                        img.onerror = null;
+                        resetImagePreview();
                     }
                 }, 10000); // 10 second timeout
 
                 img.src = data.image_url;
             } else {
-                console.error('API error or no image URL:', data);
-                // Fallback to a default gradient
-                cardBackground.style.backgroundImage = 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)';
-                cardBackground.style.opacity = '1';
-
-                // Reset button
-                refreshImageBtn.disabled = false;
-                refreshImageBtn.innerHTML = '<i class="fas fa-sync-alt mr-2"></i>Refresh Image';
+                resetImagePreview();
             }
         })
         .catch(error => {
             console.error('Error loading image:', error);
-            // Fallback to a default gradient
-            cardBackground.style.backgroundImage = 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)';
-            cardBackground.style.opacity = '1';
-
-            // Reset button
-            refreshImageBtn.disabled = false;
-            refreshImageBtn.innerHTML = '<i class="fas fa-sync-alt mr-2"></i>Refresh Image';
+            resetImagePreview();
         });
     }
 
@@ -454,21 +442,35 @@ document.addEventListener('DOMContentLoaded', function() {
         return `${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,'0')}-${String(now.getDate()).padStart(2,'0')}`;
     }
 
+    function canvasImageData(image) {
+        const canvas = document.createElement('canvas');
+        canvas.width = 1000;
+        canvas.height = 512;
+        const scale = Math.max(canvas.width / image.naturalWidth, canvas.height / image.naturalHeight);
+        const width = image.naturalWidth * scale;
+        const height = image.naturalHeight * scale;
+        canvas.getContext('2d').drawImage(image, (canvas.width - width) / 2, (canvas.height - height) / 2, width, height);
+        return canvas.toDataURL('image/jpeg', 0.92);
+    }
+
     async function saveCard() {
-        // Gather current card data from the UI
-        const imageCss = window.getComputedStyle(cardBackground).backgroundImage || '';
-        let imageUrl = (imageCss.startsWith('url(') ? imageCss.slice(4, -1).replace(/^"|"$/g, '') : '') || '';
-        if (!imageUrl && currentImageUrl) imageUrl = currentImageUrl;
-
-        const quoteText = (cardQuote && cardQuote.textContent) ? cardQuote.textContent.trim() : '';
-        const weekday = document.getElementById('weekday')?.textContent?.trim() || '';
-        const monthDay = document.getElementById('monthDay')?.textContent?.trim() || '';
-
         // Directly attempt to save; backend will respond with reason='exists' if needed
         saveCardBtn.disabled = true;
         saveCardBtn.innerHTML = '<i class="fas fa-spinner fa-spin mr-2"></i>Saving...';
         try {
-            await postSaveCard({ imageUrl, quoteText, weekday });
+            const payload = {
+                quote: cardQuote?.textContent?.trim() || '',
+                weekday: document.getElementById('weekday')?.textContent?.trim() || '',
+                streak: parseInt(document.getElementById('streakDays')?.textContent || '0', 10) || 0,
+                habits_completed: {{ completed_today }},
+                selected_date: getSelectedDateISO()
+            };
+            if (currentImageId) {
+                payload.image_id = currentImageId;
+            } else if (currentImage) {
+                payload.image_data = canvasImageData(currentImage);
+            }
+            await postSaveCard(payload);
         } catch (err) {
             console.error('Save failed:', err);
             alert('Failed to save card. Please try again.');
@@ -477,60 +479,12 @@ document.addEventListener('DOMContentLoaded', function() {
         }
     }
 
-    async function postSaveCard({ imageUrl, quoteText, weekday, overwrite=false }) {
-        const selectedDateISO = getSelectedDateISO();
-        // Safely try to capture the currently displayed image as bytes
-        let imageData = '';
+    async function postSaveCard(payload, overwrite = false) {
         try {
-            const bg = window.getComputedStyle(cardBackground).backgroundImage;
-            const match = bg && bg.match(/url\(["']?(.*?)["']?\)/);
-            const imgUrl = (match && match[1]) || imageUrl;
-            if (imgUrl && /^https?:/i.test(imgUrl)) {
-                const canvas = document.createElement('canvas');
-                // Match the card's top image aspect ratio (500x256 ~= 1.953), use higher resolution for quality
-                canvas.width = 1000; canvas.height = 512;
-                const ctx = canvas.getContext('2d');
-                await new Promise((resolve) => {
-                    const img = new Image();
-                    img.crossOrigin = 'anonymous';
-                    img.onload = () => {
-                        try {
-                            const iw = img.naturalWidth || img.width;
-                            const ih = img.naturalHeight || img.height;
-                            const tw = canvas.width, th = canvas.height;
-                            // object-fit: cover algorithm to avoid any stretching
-                            const scale = Math.max(tw / iw, th / ih);
-                            const dw = iw * scale;
-                            const dh = ih * scale;
-                            const dx = (tw - dw) / 2;
-                            const dy = (th - dh) / 2;
-                            ctx.drawImage(img, dx, dy, dw, dh);
-                        } catch(e) {}
-                        resolve();
-                    };
-                    img.onerror = () => resolve();
-                    img.src = imgUrl;
-                });
-                try { imageData = canvas.toDataURL('image/jpeg', 0.92); } catch(e) { imageData = ''; }
-            }
-        } catch (e) { imageData = ''; }
-        try {
-            // compute streak from earliest->selected date on the client to persist exact value
-            let computedStreak = parseInt(document.getElementById('streakDays')?.textContent || '0', 10) || 0;
-            const payload = {
-                image_url: imageUrl,
-                quote: quoteText,
-                weekday: weekday,
-                streak: computedStreak,
-                habits_completed: {{ completed_today }},
-                selected_date: selectedDateISO,
-                image_data: imageData,
-                overwrite: overwrite
-            };
             const resp = await fetch('/cards/api/card/save', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json', 'X-CSRFToken': csrfToken },
-                body: JSON.stringify(payload)
+                body: JSON.stringify({ ...payload, overwrite })
             });
             const data = await resp.json();
             if (data.success) {
@@ -541,7 +495,7 @@ document.addEventListener('DOMContentLoaded', function() {
                 }, 1500);
             } else if (data.reason === 'exists') {
                 // Backend double-check; show modal
-                showOverwriteModal({ imageUrl, quoteText, weekday });
+                showOverwriteModal(payload);
             } else {
                 throw new Error(data.error || 'Unknown error');
             }
@@ -554,7 +508,7 @@ document.addEventListener('DOMContentLoaded', function() {
     }
 
     // Overwrite confirmation modal (JS only, lightweight)
-    function showOverwriteModal(context) {
+    function showOverwriteModal(payload) {
         // Build a simple modal dynamically to avoid altering base templates
         const overlay = document.createElement('div');
         overlay.className = 'fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50';
@@ -583,7 +537,7 @@ document.addEventListener('DOMContentLoaded', function() {
         };
         document.getElementById('confirmOverwrite').onclick = async () => {
             try {
-                await postSaveCard({ imageUrl: context.imageUrl, quoteText: context.quoteText, weekday: context.weekday, overwrite: true });
+                await postSaveCard(payload, true);
             } finally {
                 document.body.removeChild(overlay);
             }
