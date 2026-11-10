@@ -5,6 +5,7 @@ from flask_login import current_user, login_required
 
 from app.ai.vector_store import HabitVectorStore
 from app.ai.llm_client import get_llm
+from app.ai.report_rendering import render_report_markdown
 from app.ai.service import (
     recommend_habits,
     parse_habit_text,
@@ -73,13 +74,10 @@ def ai_report():
     llm = get_llm()
     report_md = generate_report_text(stats, report_type, tone, llm)
 
-    import markdown
-    html_report = markdown.markdown(report_md, extensions=["extra"])
-
     return render_template(
         "ai_report.html",
         title=f"AI {report_type.capitalize()} Report",
-        report=html_report,
+        report=render_report_markdown(report_md),
         report_type=report_type,
         tone=tone,
         stats=stats,
