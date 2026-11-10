@@ -181,9 +181,9 @@ function hideDeleteModal() {
 document.getElementById('confirmDelete').addEventListener('click', function() {
     if (!cardToDelete) return;
     fetch(`/cards/api/card/${cardToDelete}`, { method: 'DELETE', headers: { 'X-CSRFToken': (document.querySelector('meta[name="csrf-token"]')?.content || '') } })
-        .then(resp => resp.json())
-        .then(data => {
-            if (data.success) {
+        .then(async resp => {
+            const data = await resp.json();
+            if (resp.ok && data.success) {
                 const cardEl = document.querySelector(`[data-card-id="${cardToDelete}"]`);
                 const container = cardEl ? cardEl.closest('.group') : null;
                 if (container && container.parentElement) {
@@ -192,7 +192,9 @@ document.getElementById('confirmDelete').addEventListener('click', function() {
                 hideDeleteModal();
                 cardToDelete = null;
             } else {
-                alert(data.error || 'Failed to delete card.');
+                alert(data.error === 'csrf_validation_failed'
+                    ? 'Refresh this page and try again.'
+                    : (data.error || 'Failed to delete card.'));
             }
         })
         .catch(err => {

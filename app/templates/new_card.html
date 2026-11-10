@@ -487,6 +487,9 @@ document.addEventListener('DOMContentLoaded', function() {
                 body: JSON.stringify({ ...payload, overwrite })
             });
             const data = await resp.json();
+            if (!resp.ok) {
+                throw new Error(data.error || 'Save request failed');
+            }
             if (data.success) {
                 saveCardBtn.innerHTML = '<i class="fas fa-check mr-2"></i>Saved';
                 setTimeout(() => {

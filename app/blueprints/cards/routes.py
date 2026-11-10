@@ -4,9 +4,10 @@ from pathlib import PurePosixPath
 
 from flask import Blueprint, render_template, jsonify, redirect, url_for, flash, request
 from flask_login import current_user, login_required
+from flask_wtf.csrf import CSRFError
 from werkzeug.exceptions import RequestEntityTooLarge
 
-from app.extensions import db, csrf
+from app.extensions import db
 from app.services.card_service import (
     CardInputError,
     get_card_page_data,
@@ -19,6 +20,11 @@ from app.services.card_service import (
 )
 
 cards_bp = Blueprint('cards', __name__, url_prefix='/cards')
+
+
+@cards_bp.errorhandler(CSRFError)
+def card_csrf_error(_error):
+    return jsonify({'success': False, 'error': 'csrf_validation_failed'}), 400
 
 
 @cards_bp.route('/new', methods=['GET', 'POST'])
@@ -34,11 +40,15 @@ def new_card():
 
 
 @cards_bp.route('/api/card/save', methods=['POST'])
-@csrf.exempt
 @login_required
 def save_card_api():
+    if not request.is_json:
+        return jsonify({'success': False, 'error': 'unsupported_media_type'}), 415
     try:
-        result = save_card(current_user.id, request.get_json(force=True, silent=True))
+        data = request.get_json(silent=True)
+        if not isinstance(data, dict):
+            return jsonify({'success': False, 'error': 'invalid_card_data'}), 400
+        result = save_card(current_user.id, data)
         if result.get('reason') == 'exists':
             return jsonify({'success': False, 'reason': 'exists'}), 200
         return jsonify({'success': True, **result})
@@ -52,7 +62,6 @@ def save_card_api():
 
 
 @cards_bp.route('/api/card/today')
-@csrf.exempt
 @login_required
 def get_today_card_meta():
     try:
@@ -108,7 +117,6 @@ def card_stack():
 
 
 @cards_bp.route('/api/card/<int:card_id>', methods=['DELETE'])
-@csrf.exempt
 @login_required
 def delete_card(card_id):
     try:

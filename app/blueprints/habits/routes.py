@@ -35,7 +35,7 @@ def my_habits():
 @habits_bp.route('/new', methods=['GET', 'POST'])
 @login_required
 def new_habit():
-    if request.is_json:
+    if request.method == 'POST' and request.is_json:
         data = request.get_json()
         try:
             create_habit(
@@ -155,14 +155,15 @@ def habit_delete(habit_id):
 @habits_bp.route('/check_in/<int:habit_id>', methods=['GET', 'POST'])
 @login_required
 def check_in(habit_id):
+    json_submission = request.method == 'POST' and request.is_json
     habit = get_habit_or_none(habit_id, current_user.id)
     if not habit:
-        if request.is_json:
+        if json_submission:
             return jsonify({'success': False, 'message': 'Habit does not exist'})
         flash('Habit does not exist', 'danger')
         return redirect(url_for('main.home'))
 
-    if request.is_json:
+    if json_submission:
         data = request.get_json()
         try:
             time_str = data.get('time', '')
@@ -197,7 +198,7 @@ def check_in(habit_id):
                            record_exist=record_exist)
 
 
-@habits_bp.route('/uncheck/<int:habit_id>', methods=['GET', 'POST'])
+@habits_bp.route('/uncheck/<int:habit_id>', methods=['POST'])
 @login_required
 def uncheck(habit_id):
     try:

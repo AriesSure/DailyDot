@@ -65,14 +65,15 @@
           </div>
           <h3 class="text-lg font-bold text-gray-800 mb-2">Log Out</h3>
           <p class="text-gray-600 mb-6">Are you sure you want to log out?</p>
-          <div class="flex space-x-4">
-            <button id="confirmLogout" class="flex-1 bg-red-600 text-white px-4 py-2 rounded-lg hover:bg-red-700 transition-all duration-300 font-semibold">
+          <form method="post" action="{{ url_for('auth.logout') }}" class="flex space-x-4">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+            <button type="submit" class="flex-1 bg-red-600 text-white px-4 py-2 rounded-lg hover:bg-red-700 transition-all duration-300 font-semibold">
               Yes
             </button>
-            <button id="cancelLogout" class="flex-1 bg-gray-500 text-white px-4 py-2 rounded-lg hover:bg-gray-600 transition-all duration-300 font-semibold">
+            <button type="button" id="cancelLogout" class="flex-1 bg-gray-500 text-white px-4 py-2 rounded-lg hover:bg-gray-600 transition-all duration-300 font-semibold">
               No
             </button>
-          </div>
+          </form>
         </div>
       </div>
     </div>
@@ -116,7 +117,6 @@ document.addEventListener('DOMContentLoaded', function() {
   const logoutBtn = document.getElementById('logoutBtn');
   const logoutModal = document.getElementById('logoutModal');
   const logoutModalContent = document.getElementById('logoutModalContent');
-  const confirmLogout = document.getElementById('confirmLogout');
   const cancelLogout = document.getElementById('cancelLogout');
 
   // Show pop-up window
@@ -138,10 +138,6 @@ document.addEventListener('DOMContentLoaded', function() {
   cancelLogout.addEventListener('click', hideLogoutModal);
   logoutModal.addEventListener('click', function(e) {
     if (e.target === logoutModal) hideLogoutModal();
-  });
-  // Confirm Logout
-  confirmLogout.addEventListener('click', function() {
-    window.location.href = "{{ url_for('auth.logout') }}";
   });
 });
 </script>

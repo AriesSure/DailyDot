@@ -19,7 +19,7 @@ todos_bp = Blueprint('todos', __name__, url_prefix='/todos')
 @todos_bp.route('/new', methods=['GET', 'POST'])
 @login_required
 def new_todo():
-    if request.is_json:
+    if request.method == 'POST' and request.is_json:
         data = request.get_json()
         try:
             create_todo(

@@ -161,7 +161,7 @@ class TestWriteSafety:
         assert response_a.get_json()["success"] is True
 
         # Register and login User B
-        client.get("/auth/logout", follow_redirects=True)
+        client.post("/auth/logout", follow_redirects=True)
         client.post("/auth/register", data={
             "username": "user_b_iso",
             "email": "b_iso@test.com",

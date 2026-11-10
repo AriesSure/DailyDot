@@ -64,7 +64,7 @@ class TestLogout:
         client.post('/auth/login', data={
             'username': 'logoutuser', 'password': 'Pass@1234', 'remember_me': 'y',
         })
-        r = client.get('/auth/logout', follow_redirects=True)
+        r = client.post('/auth/logout', follow_redirects=True)
         assert r.status_code == 200
 
 

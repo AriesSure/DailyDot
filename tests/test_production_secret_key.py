@@ -180,7 +180,7 @@ def test_production_key_rotation_rejects_old_login_cookies(
 
     sign_in(rotated)
     assert rotated.get_cookie(cookie_name).value != old_cookie.value
-    assert rotated.get('/auth/logout').status_code == 302
+    assert rotated.post('/auth/logout').status_code == 302
     with rotated.session_transaction() as session:
         assert '_user_id' not in session
     assert rotated.get_cookie(original.config.get('REMEMBER_COOKIE_NAME', 'remember_token')) is None
