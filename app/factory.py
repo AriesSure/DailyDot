@@ -5,7 +5,7 @@ import os
 from flask import Flask
 from jinja2 import StrictUndefined
 
-from app.config import config_by_name
+from app.config import config_by_name, require_production_secret_key
 from app.extensions import db, init_extensions
 import sqlalchemy as sa
 
@@ -27,9 +27,16 @@ def create_app(config_name: str | None = None) -> Flask:
     if config_name is None:
         config_name = os.environ.get('FLASK_ENV', 'development')
 
+    config = config_by_name[config_name]
+    if config_name == 'production':
+        secret_key = require_production_secret_key()
+    else:
+        secret_key = os.environ.get('SECRET_KEY') or config.SECRET_KEY
+
     app = Flask(__name__)
     app.jinja_env.undefined = StrictUndefined
-    app.config.from_object(config_by_name[config_name])
+    app.config.from_object(config)
+    app.config['SECRET_KEY'] = secret_key
 
     if app.testing:
         from app.testing_database import configure_testing_database

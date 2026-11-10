@@ -10,11 +10,28 @@ import os
 
 # Root of the project (directory containing `app/`)
 _basedir = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+_NON_PRODUCTION_SECRET_KEY = b'WR#&f&+%78er0we=%799eww+#7^90-;s'
+_UNSAFE_PRODUCTION_SECRET_KEYS = {
+    _NON_PRODUCTION_SECRET_KEY.decode('ascii'),
+    'change-this-to-a-long-random-string',  # .env.example
+}
+
+
+class ProductionSecretKeyError(RuntimeError):
+    """The production profile requires a deployer-provided signing key."""
+
+
+def require_production_secret_key() -> str:
+    key = os.environ.get('SECRET_KEY', '')
+    candidate = key.strip()
+    if len(candidate) < 32 or candidate in _UNSAFE_PRODUCTION_SECRET_KEYS:
+        raise ProductionSecretKeyError('production_secret_key_required')
+    return key
 
 
 class Config:
     """Base configuration — shared by all environments."""
-    SECRET_KEY = os.environ.get('SECRET_KEY') or b'WR#&f&+%78er0we=%799eww+#7^90-;s'
+    SECRET_KEY = None
     SQLALCHEMY_TRACK_MODIFICATIONS = False
     SQLALCHEMY_ECHO = False
 
@@ -23,6 +40,7 @@ class Config:
 
 
 class DevelopmentConfig(Config):
+    SECRET_KEY = _NON_PRODUCTION_SECRET_KEY
     DEBUG = True
     SQLALCHEMY_ECHO = True
     SQLALCHEMY_DATABASE_URI = (
@@ -32,6 +50,7 @@ class DevelopmentConfig(Config):
 
 
 class TestingConfig(Config):
+    SECRET_KEY = _NON_PRODUCTION_SECRET_KEY
     TESTING = True
     SQLALCHEMY_ECHO = False
     # Test-only overrides are read and validated by the application factory.
