@@ -38,6 +38,29 @@ STATES = ('UNAUTHORIZED', 'TARGET_VALIDATED', 'EMPTY_OWNED', 'INITIAL_VERIFIED',
           'EMPTY_VERIFIED', 'DISPOSED')
 STAGES = ('admission', 'application', 'identity', 'initial', 'history', 'forward',
           'schema', 'crud', 'repeat', 'downgrade', 'cleanup', 'release', 'complete')
+CRUD_SUBSTAGES = ('insert_defaults_commit', 'verify_defaults', 'update_commit', 'verify_update',
+                 'rollback_probe', 'record_unique', 'card_unique', 'card_foreign_key',
+                 'todo_duplicate', 'card_delete', 'card_survivor', 'session_remove',
+                 'schema_snapshot', 'data_snapshot')
+# Only checks reachable during CRUD or its following Session/snapshot operations.
+# bind/dependency/admission/cleanup-only codes are deliberately not public here.
+CRUD_ERROR_CODES = (
+    'migration_orm_default_failed', 'migration_orm_update_failed', 'migration_orm_rollback_failed',
+    'migration_constraint_wrong_error', 'migration_constraint_not_enforced',
+    'migration_orm_delete_failed', 'migration_auto_increment_failed',
+    'migration_environment_changed', 'migration_application_changed', 'migration_config_changed',
+    'migration_engine_changed', 'migration_target_changed', 'migration_creator_changed',
+    'migration_physical_path_invalid', 'migration_nested_creator', 'migration_driver_path_invalid',
+    'migration_engine_creation_denied', 'migration_driver_denied', 'migration_driver_target_changed',
+    'migration_tcp_denied', 'migration_socket_options_denied', 'migration_dns_denied', 'migration_io_denied',
+    'migration_unknown_schema_object', 'migration_partition_forbidden', 'migration_unknown_table',
+    'migration_index_options_changed', 'migration_foreign_schema', 'migration_foreign_options',
+    'migration_unknown_check',
+)
+GENERAL_ERROR_CODES = ('mysql_forward_migration_failed', 'forward_migration_preflight_failed',
+                       'migration_server_identity_changed')
+EXCEPTION_TYPES = ('MigrationSafetyError', 'RuntimeError', 'OperationalError', 'IntegrityError',
+                   'DBAPIError', 'ProgrammingError', 'CommandError', 'TimeoutError', 'AssertionError', 'OtherError')
 DROP_SQL = MappingProxyType({name: 'DROP TABLE `' + name + '`' for name in TABLES})
 SELECT_SQL = MappingProxyType({name: 'SELECT * FROM `' + name + '` ORDER BY ' +
               ('version_num' if name == 'alembic_version' else 'id') for name in TABLES})
@@ -49,14 +72,29 @@ _engine_lease = ContextVar('mysql_migration_engine', default=None)
 
 
 class MigrationSafetyError(RuntimeError):
-    def __init__(self, code):
+    def __init__(self, code, *, mysql_errno=None):
         self.code = code
+        self.mysql_errno = mysql_errno
         super().__init__(code)
 
 
-def require(condition, code):
+def require(condition, code, *, mysql_errno=None):
     if not condition:
-        raise MigrationSafetyError(code)
+        raise MigrationSafetyError(code, mysql_errno=mysql_errno)
+
+
+def valid_mysql_errno(value):
+    return type(value) is int and 1 <= value <= 65535
+
+
+def dbapi_mysql_errno(exc):
+    # Public SQLAlchemy + PyMySQL exception interfaces only, never message text.
+    # Do not walk arbitrary exception chains or carry a previous probe's errno.
+    if isinstance(exc, sa.exc.DBAPIError) and isinstance(exc.orig, pymysql.MySQLError):
+        args = exc.orig.args
+        if args and valid_mysql_errno(args[0]):
+            return args[0]
+    return None
 
 
 def admit(environ=None):
@@ -406,6 +444,7 @@ class MigrationRun:
     def __init__(self):
         self.state = STATES[0]
         self.stage = 'admission'
+        self.substage = None
         self.cleanup_authorized = False
         self.boundary = self.app = self.db = None
         self.verified_schema = self.verified_data = None
@@ -527,6 +566,18 @@ class MigrationRun:
         if primary is None and self.state == 'EMPTY_VERIFIED':
             self.advance('EMPTY_VERIFIED', 'DISPOSED')
 
+    def verify_crud_and_snapshots(self):
+        """The original CRUD/Session/snapshot sequence, with fixed diagnostics."""
+        self.stage = 'crud'
+        verify_crud(self.db, self)
+        self.substage = 'session_remove'
+        self.db.session.remove()
+        self.substage = 'schema_snapshot'
+        schema = schema_snapshot(self.boundary.engine)
+        self.substage = 'data_snapshot'
+        data = data_snapshot(self.boundary.engine)
+        self.verified_schema, self.verified_data = schema, data
+
     def execute(self):
         from alembic import command
         from alembic.config import Config
@@ -596,10 +647,8 @@ class MigrationRun:
                                 and connection.execute(sa.text('SELECT count(*) FROM todos WHERE completed<>0')).scalar_one() == 0,
                                 'migration_history_changed')
                     self.advance('INITIAL_VERIFIED', 'HEAD_VERIFIED')
-                    self.stage = 'crud'
-                    verify_crud(self.db)
-                    self.db.session.remove()
-                    self.verified_schema, self.verified_data = schema_snapshot(engine), data_snapshot(engine)
+                    self.verify_crud_and_snapshots()
+                    self.substage = None
                     self.stage = 'repeat'
                     command.upgrade(config, 'head')
                     self.verify_server_identity(engine)
@@ -636,7 +685,7 @@ class MigrationRun:
                     self.stage = 'release'
                 self.release(primary)
         self.stage = 'complete'
-        return {'status': 'passed', 'stage': self.stage, 'error_code': None, 'exception_type': None,
+        return {'status': 'passed', 'stage': self.stage, 'substage': None, 'error_code': None, 'exception_type': None,
                 'mysql_errno': None, 'state': self.state, 'facts': self.facts}
 
 
@@ -652,43 +701,53 @@ def seed_history(engine):
             connection.execute(sa.text(statement))
 
 
-def verify_crud(db):
+def verify_crud(db, run):
+    run.substage = 'insert_defaults_commit'
     from app.models import Card, Record, Todo
     record = Record(habit_id=11, checkin_date=date(2025, 1, 2), note='新增打卡')
     todo = Todo(user_id=2, event='book', date='02/01/2025', time='12:00')
     card = Card(user_id=1, date=date(2025, 1, 2), quote='中文卡片 < & >')
     db.session.add_all([record, todo, card])
     db.session.commit()
+    run.substage = 'verify_defaults'
     require(record.checkin_time is not None and todo.completed is False and card.id > 0
             and card.streak == card.habits_completed == 0, 'migration_orm_default_failed')
+    run.substage = 'update_commit'
     card.quote = 'updated 中文'
     todo.completed = True
     db.session.commit()
     db.session.expire_all()
+    run.substage = 'verify_update'
     require(db.session.get(Card, card.id).quote == 'updated 中文' and db.session.get(Todo, todo.id).completed,
             'migration_orm_update_failed')
+    run.substage = 'rollback_probe'
     db.session.add(Card(user_id=1, date=date(2025, 1, 3)))
     db.session.flush()
     db.session.rollback()
     require(db.session.query(Card).count() == 1, 'migration_orm_rollback_failed')
-    for invalid, expected_errno in ((Record(habit_id=11, checkin_date=date(2025, 1, 2)), 1062),
-                                    (Card(user_id=1, date=date(2025, 1, 2)), 1062),
-                                    (Card(user_id=999, date=date(2025, 1, 4)), 1452)):
+    for invalid, expected_errno, substage in (
+            (Record(habit_id=11, checkin_date=date(2025, 1, 2)), 1062, 'record_unique'),
+            (Card(user_id=1, date=date(2025, 1, 2)), 1062, 'card_unique'),
+            (Card(user_id=999, date=date(2025, 1, 4)), 1452, 'card_foreign_key')):
+        run.substage = substage
         db.session.add(invalid)
         try:
             db.session.commit()
         except sa.exc.IntegrityError as exc:
             require(type(exc.orig.args[0]) is int and exc.orig.args[0] == expected_errno,
-                    'migration_constraint_wrong_error')
+                    'migration_constraint_wrong_error', mysql_errno=dbapi_mysql_errno(exc))
             db.session.rollback()
         else:
             raise MigrationSafetyError('migration_constraint_not_enforced')
+    run.substage = 'todo_duplicate'
     db.session.add(Todo(user_id=1, event='book', date='03/01/2025', time='12:00'))
     db.session.commit()
+    run.substage = 'card_delete'
     db.session.delete(db.session.get(Card, card.id))
     db.session.commit()
     require(db.session.query(Card).count() == 0, 'migration_orm_delete_failed')
     # Keep a real card across repeat upgrade and refused downgrade.
+    run.substage = 'card_survivor'
     survivor = Card(user_id=2, date=date(2025, 1, 2), quote='must survive')
     db.session.add(survivor)
     db.session.commit()
@@ -697,38 +756,39 @@ def verify_crud(db):
 
 def safe_failure(exc, run):
     # No str(exc), repr(exc), SQL, parameters, traceback or URL is exported.
-    original = getattr(exc, 'orig', None)
-    args = getattr(original, 'args', ())
-    errno = args[0] if args and type(args[0]) is int and 0 <= args[0] <= 65535 else None
-    allowed_types = {'MigrationSafetyError', 'RuntimeError', 'OperationalError', 'IntegrityError',
-                     'ProgrammingError', 'CommandError', 'TimeoutError', 'AssertionError'}
+    stage = run.stage if isinstance(run.stage, str) and run.stage in STAGES else 'admission'
+    substage = run.substage if stage == 'crud' and isinstance(run.substage, str) and run.substage in CRUD_SUBSTAGES else None
+    errno = dbapi_mysql_errno(exc)
     code = 'mysql_forward_migration_failed'
     if type(exc) is RuntimeError and exc.args == ('forward_migration_preflight_failed',):
         code = 'forward_migration_preflight_failed'
-    if isinstance(exc, MigrationSafetyError) and exc.code == 'migration_server_identity_changed':
-        code = 'migration_server_identity_changed'
-    return {'status': 'failed', 'stage': run.stage if run.stage in STAGES else 'admission',
+    if isinstance(exc, MigrationSafetyError):
+        if exc.code == 'migration_server_identity_changed' or stage == 'crud' and exc.code in CRUD_ERROR_CODES:
+            code = exc.code
+        if code == 'migration_constraint_wrong_error' and valid_mysql_errno(exc.mysql_errno):
+            errno = exc.mysql_errno
+    return {'status': 'failed', 'stage': stage, 'substage': substage,
             'error_code': code,
-            'exception_type': type(exc).__name__ if type(exc).__name__ in allowed_types else 'OtherError',
-            'mysql_errno': errno, 'state': run.state if run.state in STATES else 'UNAUTHORIZED', 'facts': {}}
+            'exception_type': type(exc).__name__ if type(exc).__name__ in EXCEPTION_TYPES else 'OtherError',
+            'mysql_errno': errno,
+            'state': run.state if isinstance(run.state, str) and run.state in STATES else 'UNAUTHORIZED', 'facts': {}}
 
 
 def validate_result(value):
-    require(isinstance(value, dict) and set(value) == {'status', 'stage', 'error_code', 'exception_type',
+    require(isinstance(value, dict) and set(value) == {'status', 'stage', 'substage', 'error_code', 'exception_type',
                                                      'mysql_errno', 'state', 'facts'}, 'migration_child_protocol_invalid')
     require(value['status'] in ('passed', 'failed') and value['stage'] in STAGES and value['state'] in STATES,
             'migration_child_protocol_invalid')
-    require(value['error_code'] in (None, 'mysql_forward_migration_failed', 'forward_migration_preflight_failed',
-                                   'migration_server_identity_changed')
-            and value['exception_type'] in (None, 'MigrationSafetyError', 'RuntimeError', 'OperationalError',
-                'IntegrityError', 'ProgrammingError', 'CommandError', 'TimeoutError', 'AssertionError', 'OtherError')
-            and (value['mysql_errno'] is None or type(value['mysql_errno']) is int
-                 and 0 <= value['mysql_errno'] <= 65535), 'migration_child_protocol_invalid')
+    require((value['substage'] is None or value['stage'] == 'crud' and value['substage'] in CRUD_SUBSTAGES)
+            and value['error_code'] in (None,) + GENERAL_ERROR_CODES + (CRUD_ERROR_CODES if value['stage'] == 'crud' else ())
+            and value['exception_type'] in (None,) + EXCEPTION_TYPES
+            and (value['mysql_errno'] is None or valid_mysql_errno(value['mysql_errno'])),
+            'migration_child_protocol_invalid')
     facts = value['facts']
     require(isinstance(facts, dict), 'migration_child_protocol_invalid')
     if value['status'] == 'passed':
         require(value['stage'] == 'complete' and value['state'] == 'DISPOSED'
-                and value['error_code'] is value['exception_type'] is value['mysql_errno'] is None
+                and value['substage'] is value['error_code'] is value['exception_type'] is value['mysql_errno'] is None
                 and set(facts) == {'server_version', 'charset', 'collation', 'foreign_keys', 'autocommit',
                                    'database', 'account', 'tables', 'types'}
                 and isinstance(facts['server_version'], str)
@@ -746,8 +806,7 @@ def validate_result(value):
                 and facts['types']['todo_completed'] in ('TINYINT(1)', 'BOOLEAN', 'BOOL'),
                 'migration_child_protocol_invalid')
     else:
-        require(not facts and value['error_code'] in ('mysql_forward_migration_failed', 'forward_migration_preflight_failed',
-                                                    'migration_server_identity_changed')
+        require(not facts and value['error_code'] is not None
                 and value['exception_type'] is not None, 'migration_child_protocol_invalid')
     return value
 

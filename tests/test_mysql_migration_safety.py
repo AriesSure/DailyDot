@@ -494,7 +494,7 @@ def test_preflight_failure_has_safe_distinct_fixed_code():
 
 
 def test_success_protocol_accepts_only_bounded_verified_facts():
-    payload = {'status': 'passed', 'stage': 'complete', 'state': 'DISPOSED', 'error_code': None,
+    payload = {'status': 'passed', 'stage': 'complete', 'substage': None, 'state': 'DISPOSED', 'error_code': None,
                'exception_type': None, 'mysql_errno': None,
                'facts': {'server_version': '8.0.46', 'charset': 'utf8mb4', 'collation': 'utf8mb4_0900_ai_ci',
                          'foreign_keys': True, 'autocommit': False, 'database': 'dailydot_test',
@@ -688,3 +688,391 @@ def test_identity_failure_json_contains_only_fixed_classification():
     result = m.safe_failure(m.MigrationSafetyError('migration_server_identity_changed'), run)
     assert m.validate_result(result)['error_code'] == 'migration_server_identity_changed'
     assert result['facts'] == {} and URL not in json.dumps(result) and PASSWORD not in json.dumps(result)
+
+
+# Diagnostics below use DBAPI exception objects and a Session double, not MySQL.
+CRUD_DIRECT_CODES = (
+    'migration_orm_default_failed', 'migration_orm_update_failed', 'migration_orm_rollback_failed',
+    'migration_constraint_wrong_error', 'migration_constraint_not_enforced',
+    'migration_orm_delete_failed', 'migration_auto_increment_failed',
+)
+DIAGNOSTIC_STEPS = (
+    'insert_defaults_commit', 'verify_defaults', 'update_commit', 'verify_update',
+    'rollback_probe', 'record_unique', 'card_unique', 'card_foreign_key', 'todo_duplicate',
+    'card_delete', 'card_survivor', 'session_remove', 'schema_snapshot', 'data_snapshot',
+)
+
+
+def diagnostic_run():
+    run = m.MigrationRun()
+    run.stage, run.substage, run.state = 'crud', 'verify_defaults', 'HEAD_VERIFIED'
+    # Failure output must not serialize facts gathered earlier in the run.
+    run.facts = {'password': PASSWORD, 'database_url': URL}
+    return run
+
+
+def driver_error(errno, exception_class=sa.exc.IntegrityError):
+    return exception_class('fictional SQL ' + URL, {'password': PASSWORD},
+                           pymysql.IntegrityError(errno, 'fictional private message ' + PASSWORD))
+
+
+@pytest.mark.parametrize('code', CRUD_DIRECT_CODES)
+def test_crud_direct_codes_are_preserved_without_raw_facts(code):
+    result = m.safe_failure(m.MigrationSafetyError(code), diagnostic_run())
+    assert m.validate_result(result)['error_code'] == code
+    assert result['facts'] == {} and result['mysql_errno'] is None
+    assert PASSWORD not in json.dumps(result) and URL not in json.dumps(result)
+
+
+@pytest.mark.parametrize('code', [
+    'migration_environment_changed', 'migration_application_changed', 'migration_config_changed',
+    'migration_engine_changed', 'migration_target_changed', 'migration_creator_changed',
+    'migration_physical_path_invalid', 'migration_nested_creator', 'migration_driver_path_invalid',
+    'migration_engine_creation_denied', 'migration_driver_denied', 'migration_driver_target_changed',
+    'migration_tcp_denied', 'migration_socket_options_denied', 'migration_dns_denied', 'migration_io_denied',
+    'migration_unknown_schema_object', 'migration_partition_forbidden', 'migration_unknown_table',
+    'migration_index_options_changed', 'migration_foreign_schema', 'migration_foreign_options',
+    'migration_unknown_check',
+])
+def test_crud_boundary_and_snapshot_codes_are_preserved(code):
+    payload = m.safe_failure(m.MigrationSafetyError(code), diagnostic_run())
+    assert m.validate_result(payload)['error_code'] == code
+    run = diagnostic_run()
+    run.stage = 'initial'
+    assert m.safe_failure(m.MigrationSafetyError(code), run)['error_code'] == 'mysql_forward_migration_failed'
+
+
+@pytest.mark.parametrize('code', ['unknown_fixed_code', URL + PASSWORD,
+                                 'migration_bind_invalid', 'migration_resource_release_failed'])
+def test_unapproved_codes_do_not_escape(code):
+    result = m.safe_failure(m.MigrationSafetyError(code), diagnostic_run())
+    assert m.validate_result(result)['error_code'] == 'mysql_forward_migration_failed'
+    assert PASSWORD not in json.dumps(result) and URL not in json.dumps(result)
+
+
+@pytest.mark.parametrize('substage', DIAGNOSTIC_STEPS)
+def test_fixed_substages_survive_serialization(substage):
+    run = diagnostic_run()
+    run.substage = substage
+    result = m.safe_failure(m.MigrationSafetyError('migration_orm_update_failed'), run)
+    assert m.validate_result(result)['substage'] == substage
+
+
+@pytest.mark.parametrize('value', [1062, 1452, 1, 65535])
+@pytest.mark.parametrize('exception_class', [sa.exc.IntegrityError, sa.exc.OperationalError, sa.exc.DBAPIError])
+def test_public_dbapi_integer_errno_is_preserved(value, exception_class):
+    result = m.safe_failure(driver_error(value, exception_class), diagnostic_run())
+    assert m.validate_result(result)['mysql_errno'] == value
+    assert PASSWORD not in json.dumps(result) and 'fictional SQL' not in json.dumps(result)
+
+
+@pytest.mark.parametrize('value', ['1062', True, False, 0, -1, 65536, 1062.0, None, PASSWORD + URL])
+def test_invalid_driver_errno_is_null_without_parsing_text(value):
+    result = m.safe_failure(driver_error(value), diagnostic_run())
+    assert m.validate_result(result)['mysql_errno'] is None
+    assert PASSWORD not in json.dumps(result) and URL not in json.dumps(result)
+
+
+@pytest.mark.parametrize('kind', ['ordinary', 'duck_orig', 'wrong_dbapi', 'no_errno'])
+def test_no_recognizable_mysql_dbapi_error_means_no_errno(kind):
+    error = RuntimeError('1062 ' + PASSWORD + URL)
+    if kind == 'duck_orig':
+        error.orig = pymysql.IntegrityError(1062, PASSWORD)
+    elif kind == 'wrong_dbapi':
+        error = sa.exc.IntegrityError(URL, {'secret': PASSWORD}, RuntimeError(1062, PASSWORD))
+    elif kind == 'no_errno':
+        error = sa.exc.DBAPIError(URL, None, pymysql.MySQLError())
+    payload = m.safe_failure(error, diagnostic_run())
+    assert m.validate_result(payload)['mysql_errno'] is None
+    assert PASSWORD not in json.dumps(payload) and URL not in json.dumps(payload)
+
+
+@pytest.mark.parametrize('field,value', [
+    ('stage', 'unapproved'), ('stage', []), ('stage', None),
+    ('substage', 'unapproved'), ('substage', {}), ('substage', False),
+    ('error_code', 'unapproved'), ('error_code', URL), ('error_code', []), ('error_code', None),
+    ('exception_type', 'PrivateDriverError'), ('exception_type', {}), ('exception_type', None),
+    ('mysql_errno', True), ('mysql_errno', False), ('mysql_errno', '1062'), ('mysql_errno', 1062.0),
+    ('mysql_errno', 0), ('mysql_errno', -1), ('mysql_errno', 65536), ('mysql_errno', []),
+    ('state', 'unapproved'), ('state', []), ('facts', {'password': PASSWORD}), ('facts', []),
+    ('status', True), ('status', {}), ('extra', PASSWORD),
+])
+def test_failure_protocol_rejects_unapproved_fields_and_types(field, value):
+    payload = m.safe_failure(m.MigrationSafetyError('migration_orm_default_failed'), diagnostic_run())
+    payload[field] = value
+    with pytest.raises(m.MigrationSafetyError, match='^migration_child_protocol_invalid$'):
+        m.validate_result(payload)
+
+
+def test_substage_and_crud_error_cannot_be_reused_in_another_stage():
+    payload = m.safe_failure(m.MigrationSafetyError('migration_orm_default_failed'), diagnostic_run())
+    payload['stage'] = 'repeat'
+    with pytest.raises(m.MigrationSafetyError, match='^migration_child_protocol_invalid$'):
+        m.validate_result(payload)
+    payload['substage'] = None
+    with pytest.raises(m.MigrationSafetyError, match='^migration_child_protocol_invalid$'):
+        m.validate_result(payload)
+
+
+def test_unknown_runtime_diagnostics_are_filtered_before_json():
+    run = diagnostic_run()
+    run.stage, run.substage, run.state = URL, PASSWORD, URL
+    payload = m.safe_failure(ValueError(PASSWORD + URL), run)
+    assert m.validate_result(payload)['stage'] == 'admission'
+    assert payload['substage'] is None and payload['state'] == 'UNAUTHORIZED'
+    assert payload['exception_type'] == 'OtherError'
+    assert PASSWORD not in json.dumps(payload) and URL not in json.dumps(payload)
+
+
+@pytest.fixture
+def crud_double(monkeypatch):
+    """Run the real CRUD/diagnostic code with an in-memory Session DOUBLE.
+
+    No SQL execution, network or ORM/database semantics are claimed here.
+    Errors can be injected at the real operation boundary after each marker.
+    """
+    from app import models
+    run = diagnostic_run()
+    run.app = Flask('offline-crud-diagnostics')
+    operations = []
+    control = SimpleNamespace(fail_at=None, primary=None, wrong_errno=None, missing_constraint=False)
+
+    def touch(operation):
+        operations.append((run.substage, operation))
+        if run.substage == control.fail_at:
+            raise control.primary
+
+    class ModelDouble:
+        def __init__(self, **values):
+            self.__dict__.update(id=0, checkin_time=None, completed=False, streak=0, habits_completed=0)
+            self.__dict__.update(values)
+
+        def __getattribute__(self, name):
+            if name == 'checkin_time' and run.substage == 'verify_defaults':
+                touch('read_default')
+            return object.__getattribute__(self, name)
+
+    class RecordDouble(ModelDouble):
+        pass
+
+    class TodoDouble(ModelDouble):
+        pass
+
+    class CardDouble(ModelDouble):
+        pass
+
+    for name, replacement in [('Record', RecordDouble), ('Todo', TodoDouble), ('Card', CardDouble)]:
+        monkeypatch.setattr(models, name, replacement)
+
+    class SessionDouble:
+        def __init__(self):
+            self.first = {}
+            self.next_id = 100
+
+        def add_all(self, objects):
+            touch('add_all')
+            for item in objects:
+                item.id = self.next_id
+                self.next_id += 1
+                self.first[type(item)] = item
+
+        def add(self, item):
+            touch('add')
+            item.id = self.next_id
+            self.next_id += 1
+
+        def commit(self):
+            touch('commit')
+            if run.substage in ('record_unique', 'card_unique', 'card_foreign_key'):
+                if not control.missing_constraint:
+                    expected = 1452 if run.substage == 'card_foreign_key' else 1062
+                    raise driver_error(control.wrong_errno if control.wrong_errno is not None else expected)
+            elif run.substage == 'insert_defaults_commit':
+                self.first[RecordDouble].checkin_time = m.datetime(2025, 1, 2, 12).time()
+
+        def get(self, model, identity):
+            touch('get')
+            return self.first[model]
+
+        def query(self, model):
+            touch('query')
+            return SimpleNamespace(count=lambda: 1 if run.substage == 'rollback_probe' else 0)
+
+        def delete(self, item):
+            touch('delete')
+
+        def flush(self):
+            touch('flush')
+
+        def rollback(self):
+            touch('rollback')
+
+        def expire_all(self):
+            touch('expire_all')
+
+        def remove(self):
+            touch('remove')
+
+    engine = SimpleNamespace(pool=None, dispose=Mock(), begin=Mock(), execute=Mock())
+    run.db = SimpleNamespace(session=SessionDouble())
+    run.boundary = SimpleNamespace(engine=engine, pool=None)
+    schema, data = {'verified': 'schema'}, {'verified': 'data'}
+
+    def snapshot(kind, result, actual_engine):
+        assert actual_engine is engine
+        touch(kind)
+        return result
+
+    monkeypatch.setattr(m, 'schema_snapshot', lambda engine: snapshot('schema', schema, engine))
+    monkeypatch.setattr(m, 'data_snapshot', lambda engine: snapshot('data', data, engine))
+    return run, control, operations, engine, schema, data
+
+
+def test_real_crud_function_keeps_order_and_transaction_boundaries(crud_double):
+    run, control, operations, engine, schema, data = crud_double
+    run.verify_crud_and_snapshots()
+    visited = list(dict.fromkeys(step for step, operation in operations))
+    assert visited == list(DIAGNOSTIC_STEPS)
+    assert sum(operation == 'commit' for _, operation in operations) == 8
+    assert sum(operation == 'rollback' for _, operation in operations) == 4
+    assert operations[:2] == [('insert_defaults_commit', 'add_all'), ('insert_defaults_commit', 'commit')]
+    assert operations[-3:] == [('session_remove', 'remove'), ('schema_snapshot', 'schema'), ('data_snapshot', 'data')]
+    assert run.verified_schema is schema and run.verified_data is data
+    assert run.state == 'HEAD_VERIFIED' and not run.cleanup_authorized
+    engine.begin.assert_not_called()
+    engine.execute.assert_not_called()
+
+
+@pytest.mark.parametrize('substage', DIAGNOSTIC_STEPS)
+def test_real_crud_and_snapshot_failures_keep_last_marker_and_only_release(crud_double, substage):
+    run, control, operations, engine, schema, data = crud_double
+    primary = m.MigrationSafetyError('migration_orm_update_failed')
+    control.fail_at, control.primary = substage, primary
+    run.authorize_cleanup = Mock(side_effect=AssertionError('cleanup forbidden'))
+    run.cleanup = Mock(side_effect=AssertionError('DROP forbidden'))
+    # Exercise the same primary-exception/final-release contract as execute().
+    primary_seen = None
+    with pytest.raises(m.MigrationSafetyError) as result:
+        try:
+            run.verify_crud_and_snapshots()
+        except BaseException as exc:
+            primary_seen = exc
+            raise
+        finally:
+            run.release(primary_seen)
+    assert result.value is primary
+    assert run.state == 'HEAD_VERIFIED' and not run.cleanup_authorized
+    payload = m.safe_failure(primary, run)
+    assert m.validate_result(payload)['substage'] == substage
+    assert run.verified_schema is run.verified_data is None
+    assert any(operation == 'remove' for _, operation in operations)
+    engine.dispose.assert_called_once()
+    engine.begin.assert_not_called()
+    engine.execute.assert_not_called()
+    run.authorize_cleanup.assert_not_called()
+    run.cleanup.assert_not_called()
+
+
+@pytest.mark.parametrize('actual_errno,substage,rollbacks', [(1452, 'record_unique', 1),
+                                                          (1064, 'record_unique', 1),
+                                                          (1062, 'card_foreign_key', 3)])
+def test_real_constraint_conversion_retains_actual_not_expected_errno(crud_double, actual_errno, substage, rollbacks):
+    run, control, operations, engine, _, _ = crud_double
+    control.wrong_errno = actual_errno  # Never substitute the expected probe errno.
+    with pytest.raises(m.MigrationSafetyError) as caught:
+        run.verify_crud_and_snapshots()
+    payload = m.safe_failure(caught.value, run)
+    assert m.validate_result(payload)['error_code'] == 'migration_constraint_wrong_error'
+    assert payload['substage'] == substage and payload['mysql_errno'] == actual_errno
+    # Preserve the original transaction boundary: the failed require precedes rollback.
+    assert sum(operation == 'rollback' for _, operation in operations) == rollbacks
+    assert not run.cleanup_authorized and run.state == 'HEAD_VERIFIED'
+    assert PASSWORD not in json.dumps(payload) and URL not in json.dumps(payload)
+
+
+@pytest.mark.parametrize('invalid_errno', [True, False, '1062', 0, -1, 65536, 1062.5])
+def test_converted_constraint_error_rejects_invalid_diagnostic_errno(crud_double, invalid_errno):
+    run, control, _, _, _, _ = crud_double
+    control.wrong_errno = invalid_errno
+    with pytest.raises(m.MigrationSafetyError) as caught:
+        run.verify_crud_and_snapshots()
+    payload = m.safe_failure(caught.value, run)
+    assert m.validate_result(payload)['error_code'] == 'migration_constraint_wrong_error'
+    assert payload['mysql_errno'] is None
+
+
+def test_constraint_not_enforced_does_not_fabricate_expected_errno(crud_double):
+    run, control, operations, engine, _, _ = crud_double
+    control.missing_constraint = True
+    with pytest.raises(m.MigrationSafetyError) as caught:
+        run.verify_crud_and_snapshots()
+    result = m.safe_failure(caught.value, run)
+    assert result['error_code'] == 'migration_constraint_not_enforced' and result['mysql_errno'] is None
+
+
+def test_successful_constraint_errno_cannot_leak_into_later_failure(crud_double):
+    run, control, _, _, _, _ = crud_double
+    control.fail_at = 'card_delete'
+    control.primary = m.MigrationSafetyError('migration_orm_delete_failed')
+    with pytest.raises(m.MigrationSafetyError) as caught:
+        run.verify_crud_and_snapshots()
+    payload = m.safe_failure(caught.value, run)
+    assert payload['substage'] == 'card_delete' and payload['mysql_errno'] is None
+
+
+def test_release_failure_keeps_the_original_crud_exception_and_marker(crud_double):
+    run, control, _, engine, _, _ = crud_double
+    control.fail_at = 'verify_update'
+    control.primary = m.MigrationSafetyError('migration_orm_update_failed')
+    engine.dispose.side_effect = RuntimeError(PASSWORD + URL)
+    run.db.session.remove = Mock(side_effect=RuntimeError('private release failure ' + PASSWORD))
+    with pytest.raises(m.MigrationSafetyError) as caught:
+        try:
+            run.verify_crud_and_snapshots()
+        finally:
+            run.release(control.primary)
+    assert caught.value is control.primary
+    result = m.safe_failure(caught.value, run)
+    assert result['error_code'] == 'migration_orm_update_failed' and result['substage'] == 'verify_update'
+    assert result['mysql_errno'] is None and not run.cleanup_authorized
+    run.db.session.remove.assert_called_once()
+    engine.dispose.assert_called_once()
+    assert PASSWORD not in json.dumps(result) and URL not in json.dumps(result)
+
+
+def test_parent_accepts_new_crud_payload_without_forwarding_stderr(monkeypatch, capsys):
+    for key, value in ENV.items():
+        monkeypatch.setenv(key, value)
+    run = diagnostic_run()
+    run.substage = 'card_unique'
+    payload = m.safe_failure(driver_error(1062), run)
+    monkeypatch.setattr(m.subprocess, 'run', Mock(return_value=SimpleNamespace(
+        returncode=1, stdout=json.dumps(payload), stderr=URL + PASSWORD)))
+    assert m.launch() == payload
+    captured = capsys.readouterr()
+    assert captured.out == captured.err == ''
+
+
+def test_parent_rejects_unknown_substage_with_fixed_protocol_error(monkeypatch):
+    for key, value in ENV.items():
+        monkeypatch.setenv(key, value)
+    payload = m.safe_failure(driver_error(1062), diagnostic_run())
+    payload['substage'] = URL + PASSWORD
+    monkeypatch.setattr(m.subprocess, 'run', Mock(return_value=SimpleNamespace(
+        returncode=1, stdout=json.dumps(payload), stderr=URL + PASSWORD)))
+    with pytest.raises(m.MigrationSafetyError, match='^migration_child_protocol_invalid$'):
+        m.launch()
+
+
+def test_main_emits_only_safe_failure_json_and_nonzero_exit(monkeypatch, capsys):
+    run = diagnostic_run()
+    run.substage = 'insert_defaults_commit'
+    run.execute = Mock(side_effect=driver_error(1062))
+    monkeypatch.setattr(m, 'MigrationRun', lambda: run)
+    monkeypatch.setattr(m.sys, 'argv', ['fixed-child-script'])
+    assert m.main() == 1
+    captured = capsys.readouterr()
+    payload = m.validate_result(json.loads(captured.out))
+    assert payload['stage'] == 'crud' and payload['substage'] == 'insert_defaults_commit'
+    assert payload['mysql_errno'] == 1062 and payload['facts'] == {} and not captured.err
+    assert PASSWORD not in captured.out and URL not in captured.out and 'fictional SQL' not in captured.out
