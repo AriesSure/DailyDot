@@ -87,7 +87,7 @@ class Record(db.Model):
     )
     id: so.Mapped[int] = so.mapped_column(primary_key=True)
     checkin_date: so.Mapped[date] = so.mapped_column(sa.Date, default=date.today, nullable=False)
-    checkin_time: so.Mapped[time] = so.mapped_column(sa.Time, nullable=False, default=lambda: datetime.utcnow().time())
+    checkin_time: so.Mapped[Optional[time]] = so.mapped_column(sa.Time, nullable=True, default=lambda: datetime.utcnow().time())
     habit_id: so.Mapped[int] = so.mapped_column(ForeignKey('habits.id'), index=True)
     habit: so.Mapped['Habit'] = relationship(back_populates='records')
     note: so.Mapped[str] = so.mapped_column(sa.String(1024), nullable=True)

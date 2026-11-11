@@ -18,7 +18,7 @@ def main():
     except Exception:
         print("migration_validation_failed")
         return 1
-    print("migration_validation_ok: empty -> df8b049a3e7e; repeated upgrade verified")
+    print("migration_validation_ok: empty -> 9a097b8e080b; repeated upgrade verified")
     return 0
 
 

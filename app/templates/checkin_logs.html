@@ -37,7 +37,7 @@
                         <div class="flex items-center">
                             <div class="font-semibold text-gray-800 text-sm">{{ record.checkin_date.strftime('%B %d, %Y') }}</div>
                             <div class="text-gray-400 mx-2">•</div>
-                            <div class="text-xs text-gray-600">{{ record.checkin_time.strftime('%I:%M %p') }}</div>
+                            <div class="text-xs text-gray-600">{{ record.checkin_time.strftime('%I:%M %p') if record.checkin_time is not none else '时间未知' }}</div>
                         </div>
                     </div>
                     <div class="bg-white p-2 rounded-lg border border-gray-200">

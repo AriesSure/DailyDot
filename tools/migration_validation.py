@@ -1,14 +1,16 @@
 """Command admission for owned SQLite files, independent of the application factory.
 
-Only EMPTY and the pinned initial schema are admitted. This module is inert on
+Only EMPTY, INITIAL and the pinned aligned HEAD schema are admitted. This module is inert on
 import. The process-local guards are intended for a dedicated verifier process,
 not for concurrent application threads or hostile Python code in that process.
 """
 
 from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass
-from datetime import date, datetime
+from datetime import date, datetime, time
 import hashlib
+from itertools import permutations
+import ast
 import os
 from pathlib import Path
 import re
@@ -23,6 +25,9 @@ from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
 REVISION = "df8b049a3e7e"
+HEAD_REVISION = "9a097b8e080b"
+FORWARD_FILE = "9a097b8e080b_align_orm_schema_and_preserve_unknown_.py"
+FORWARD_HASH = "68983551b82cc3d288ef5a18e5be8a406c932e7fc013bae17aa32cd4ffd11028"
 INITIAL_HASH = "04a07055253abadbbc580b61052510c22344b635a0f8b8a26a1df02b08ae33f1"
 _COLUMNS = {
     "users": [("id", "INTEGER", 1), ("username", "VARCHAR(64)", 1),
@@ -46,6 +51,21 @@ _INDEXES = {
 }
 _FOREIGN = {"habits": ("user_id", "users", "id"), "todos": ("user_id", "users", "id"),
             "records": ("habit_id", "habits", "id")}
+_HEAD_COLUMNS = {name: list(columns) for name, columns in _COLUMNS.items()}
+_HEAD_COLUMNS["records"] = [
+    ("id", "INTEGER", 1), ("checkin_date", "DATE", 1), ("habit_id", "INTEGER", 1),
+    ("note", "VARCHAR(1024)", 0), ("checkin_time", "TIME", 0),
+]
+_HEAD_COLUMNS["todos"] = _COLUMNS["todos"] + [("completed", "BOOLEAN", 1)]
+_HEAD_COLUMNS["cards"] = [
+    ("id", "INTEGER", 1), ("date", "DATE", 1), ("user_id", "INTEGER", 1),
+    ("image_url", "VARCHAR(255)", 0), ("quote", "VARCHAR(255)", 0),
+    ("weekday", "VARCHAR(10)", 0), ("streak", "INTEGER", 1), ("habits_completed", "INTEGER", 1),
+]
+_HEAD_INDEXES = {name: dict(indexes) for name, indexes in _INDEXES.items()}
+_HEAD_INDEXES["todos"]["ix_todos_event"] = (0, ("event",))
+_HEAD_INDEXES["cards"] = {"ix_cards_user_id": (0, ("user_id",))}
+_HEAD_FOREIGN = {**_FOREIGN, "cards": ("user_id", "users", "id")}
 _OWNED = {}
 
 
@@ -356,10 +376,17 @@ def inspect_database_state(connection):
 
 
 def validate_initial_schema_signature(connection, objects):
+    _validate_schema_signature(connection, objects, head=False)
+
+
+def _validate_schema_signature(connection, objects, *, head):
+    schema = _HEAD_COLUMNS if head else _COLUMNS
+    expected_indexes = _HEAD_INDEXES if head else _INDEXES
+    expected_foreign = _HEAD_FOREIGN if head else _FOREIGN
     tables = {name: sql for kind, name, table, sql in objects if kind == "table"}
-    _require(set(tables) == set(_COLUMNS), "initial_tables_mismatch")
-    expected_object_names = set(_COLUMNS)
-    for table, expected in _COLUMNS.items():
+    _require(set(tables) == set(schema), "initial_tables_mismatch")
+    expected_object_names = set(schema)
+    for table, expected in schema.items():
         columns = connection.execute('PRAGMA table_xinfo("' + table + '")').fetchall()
         expected_pk = "version_num" if table == "alembic_version" else "id"
         actual = [(c[1], c[2].replace(" ", "").upper(), c[3]) for c in columns]
@@ -372,15 +399,21 @@ def validate_initial_schema_signature(connection, objects):
             definitions.append("CONSTRAINT alembic_version_pkc PRIMARY KEY (version_num)")
         else:
             definitions.append("PRIMARY KEY (id)")
-        if table in _FOREIGN:
-            child, parent, key = _FOREIGN[table]
+        if table in expected_foreign:
+            child, parent, key = expected_foreign[table]
             definitions.append(f"FOREIGN KEY({child}) REFERENCES {parent} ({key})")
         if table == "records":
-            definitions.append("CONSTRAINT uix_date_habit UNIQUE (datetime, habit_id)")
-        expected_sql = f"CREATE TABLE {table} (" + ",".join(definitions) + ")"
-        _require(_canonical(tables[table]) == _canonical(expected_sql), "initial_table_ddl_mismatch")
+            definitions.append("CONSTRAINT uix_date_habit UNIQUE (" + ("checkin_date" if head else "datetime") + ", habit_id)")
+        if head and table == "cards":
+            definitions.append("CONSTRAINT uix_date_user UNIQUE (date, user_id)")
+        # Batch recreation may reorder independent FK and UNIQUE declarations.
+        prefix = definitions[:len(expected) + 1]
+        constraints = definitions[len(expected) + 1:]
+        accepted = {_canonical(f"CREATE TABLE {table} (" + ",".join(prefix + list(order)) + ")")
+                    for order in permutations(constraints)}
+        _require(_canonical(tables[table]) in accepted, "initial_table_ddl_mismatch")
         foreign = connection.execute('PRAGMA foreign_key_list("' + table + '")').fetchall()
-        target_fk = _FOREIGN.get(table)
+        target_fk = expected_foreign.get(table)
         expected_fk = [] if target_fk is None else [
             (target_fk[1], target_fk[0], target_fk[2], "NO ACTION", "NO ACTION", "NONE")
         ]
@@ -400,10 +433,11 @@ def validate_initial_schema_signature(connection, objects):
             else:
                 auto.append((origin, signature))
             expected_object_names.add(name)
-        _require(explicit == _INDEXES[table], "initial_indexes_mismatch")
+        _require(explicit == expected_indexes[table], "initial_indexes_mismatch")
         expected_auto = {
-            "records": [("u", (1, ("datetime", "habit_id")))],
+            "records": [("u", (1, (("checkin_date" if head else "datetime"), "habit_id")))],
             "alembic_version": [("pk", (1, ("version_num",)))],
+            **({"cards": [("u", (1, ("date", "user_id")))]} if head else {}),
         }.get(table, [])
         _require(auto == expected_auto, "initial_unique_mismatch")
     _require(all(kind in {"table", "index"} and name in expected_object_names
@@ -411,15 +445,22 @@ def validate_initial_schema_signature(connection, objects):
 
 
 def validate_initial_data_integrity(connection):
+    _validate_data_integrity(connection, head=False)
+
+
+def _validate_data_integrity(connection, *, head):
+    schema = _HEAD_COLUMNS if head else _COLUMNS
     _require(connection.execute("PRAGMA integrity_check").fetchall() == [("ok",)], "sqlite_integrity_failed")
     _require(not connection.execute("PRAGMA foreign_key_check").fetchall(), "foreign_key_orphans")
-    for table, columns in _COLUMNS.items():
+    for table, columns in schema.items():
         for row in connection.execute('SELECT * FROM "' + table + '"'):
             for value, (name, kind, nn) in zip(row, columns):
                 if value is None:
                     _require(not nn, "null_initial_value")
                     continue
-                if kind == "INTEGER":
+                if kind == "BOOLEAN":
+                    _require(type(value) is int and value in (0, 1), "invalid_boolean_value")
+                elif kind == "INTEGER":
                     _require(type(value) is int, "invalid_integer_value")
                 else:
                     _require(isinstance(value, str), "invalid_text_value")
@@ -430,13 +471,20 @@ def validate_initial_data_integrity(connection):
                             _require(date.fromisoformat(value).isoformat() == value, "invalid_initial_date")
                         except ValueError:
                             raise MigrationValidationError("invalid_initial_date") from None
+                    elif kind == "TIME":
+                        try:
+                            time.fromisoformat(value)
+                        except ValueError:
+                            raise MigrationValidationError("invalid_time_value") from None
                     elif kind == "DATETIME":
                         try:
                             datetime.fromisoformat(value)
                         except ValueError:
                             raise MigrationValidationError("invalid_initial_datetime") from None
-    for table, keys in (("records", "datetime,habit_id"), ("todos", "event"),
-                        ("users", "username"), ("users", "email")):
+    unique_keys = [("records", "checkin_date,habit_id" if head else "datetime,habit_id"),
+                   ("users", "username"), ("users", "email")]
+    unique_keys.append(("cards", "date,user_id") if head else ("todos", "event"))
+    for table, keys in unique_keys:
         duplicate = connection.execute(
             f"SELECT 1 FROM {table} GROUP BY {keys} HAVING count(*) > 1 LIMIT 1"
         ).fetchone()
@@ -445,10 +493,21 @@ def validate_initial_data_integrity(connection):
 
 def _validate_revision_chain():
     versions = ROOT / "migrations" / "versions"
+    expected = {
+        "df8b049a3e7e_initial.py": (REVISION, None, INITIAL_HASH),
+        FORWARD_FILE: (HEAD_REVISION, REVISION, FORWARD_HASH),
+    }
     files = sorted(versions.glob("*.py"))
-    _require([p.name for p in files] == ["df8b049a3e7e_initial.py"], "revision_chain_not_approved")
-    source = files[0].read_bytes().replace(b"\r\n", b"\n")
-    _require(hashlib.sha256(source).hexdigest() == INITIAL_HASH, "initial_revision_changed")
+    _require({p.name for p in files} == set(expected), "revision_chain_not_approved")
+    for path in files:
+        source = path.read_bytes().replace(b"\r\n", b"\n")
+        revision, parent, digest = expected[path.name]
+        _require(hashlib.sha256(source).hexdigest() == digest, "approved_revision_changed")
+        assignments = {node.targets[0].id: ast.literal_eval(node.value)
+                       for node in ast.parse(source).body
+                       if isinstance(node, ast.Assign) and isinstance(node.targets[0], ast.Name)
+                       and node.targets[0].id in {"revision", "down_revision"}}
+        _require(assignments == {"revision": revision, "down_revision": parent}, "revision_chain_not_approved")
 
 
 def admit_migration_target(target):
@@ -461,17 +520,20 @@ def admit_migration_target(target):
         if not objects:
             state = "EMPTY"
         else:
-            validate_initial_schema_signature(connection, objects)
-            _require(connection.execute("SELECT version_num FROM alembic_version").fetchall()
-                     == [(REVISION,)], "initial_version_mismatch")
-            validate_initial_data_integrity(connection)
-            state = "INITIAL"
+            _require(any(kind == "table" and name == "alembic_version"
+                         for kind, name, table, sql in objects), "version_table_missing")
+            versions = connection.execute("SELECT version_num FROM alembic_version").fetchall()
+            _require(versions in ([(REVISION,)], [(HEAD_REVISION,)]), "initial_version_mismatch")
+            head = versions == [(HEAD_REVISION,)]
+            _validate_schema_signature(connection, objects, head=head)
+            _validate_data_integrity(connection, head=head)
+            state = "HEAD" if head else "INITIAL"
     owner["admitted"] = True
     return state
 
 
 def create_minimal_migration_app(target):
-    _require(admit_migration_target(target) in {"EMPTY", "INITIAL"}, "admission_required")
+    _require(admit_migration_target(target) in {"EMPTY", "INITIAL", "HEAD"}, "admission_required")
     owner = _OWNED[target]
     _require(owner["app"] is None and owner["boundary"] is not None, "minimal_app_already_created")
     from flask import Flask
@@ -514,7 +576,7 @@ def run_alembic_upgrade(target, application):
         config = Config(str(ROOT / "migrations" / "alembic.ini"))
         config.set_main_option("script_location", str(ROOT / "migrations"))
         command.upgrade(config, "head")
-    _require(admit_migration_target(target) == "INITIAL", "migration_result_mismatch")
+    _require(admit_migration_target(target) == "HEAD", "migration_result_mismatch")
 
 
 def verify_migrations():
@@ -523,4 +585,8 @@ def verify_migrations():
             _require(admit_migration_target(target) == "EMPTY", "fresh_database_required")
             application = create_minimal_migration_app(target)
             run_alembic_upgrade(target, application)
+            with _connection(target) as connection:
+                before = tuple(connection.iterdump())
             run_alembic_upgrade(target, application)
+            with _connection(target) as connection:
+                _require(tuple(connection.iterdump()) == before, "repeated_upgrade_changed_database")

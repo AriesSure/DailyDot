@@ -15,6 +15,15 @@ from tools import migration_validation as v
 from unittest.mock import Mock, patch
 from alembic import command
 import sqlite3
+
+def build_initial(target, application):
+    from alembic.config import Config
+    assert v.admit_migration_target(target) == 'EMPTY'
+    config = Config(str(v.ROOT / 'migrations' / 'alembic.ini'))
+    config.set_main_option('script_location', str(v.ROOT / 'migrations'))
+    with application.app_context():
+        command.upgrade(config, v.REVISION)
+    assert v.admit_migration_target(target) == 'INITIAL'
 """
 
 SEED = """
@@ -45,7 +54,7 @@ with v.create_temporary_sqlite_target() as t:
         assert v.admit_migration_target(t) == 'EMPTY'
         app = v.create_minimal_migration_app(t)
         with patch.object(command, 'upgrade', wraps=command.upgrade) as upgrade:
-            v.run_alembic_upgrade(t, app)
+            build_initial(t, app)
             assert upgrade.call_count == 1
             assert v.admit_migration_target(t) == 'INITIAL'
             with sqlite3.connect(str(t.path)) as c:
@@ -53,10 +62,18 @@ with v.create_temporary_sqlite_target() as t:
                 before = tuple(c.iterdump())
             v.run_alembic_upgrade(t, app)
             assert upgrade.call_count == 2
+            assert v.admit_migration_target(t) == 'HEAD'
+            with sqlite3.connect(str(t.path)) as c:
+                assert c.execute("SELECT id,checkin_date,habit_id,note,checkin_time FROM records").fetchall() == [
+                    (1,'2025-01-01',1,'synthetic note',None)]
+                assert c.execute("SELECT completed FROM todos").fetchall() == [(0,)]
+                before = tuple(c.iterdump())
+            v.run_alembic_upgrade(t, app)
+            assert upgrade.call_count == 3
             with sqlite3.connect(str(t.path)) as c:
                 assert tuple(c.iterdump()) == before
-                assert c.execute("SELECT version_num FROM alembic_version").fetchall() == [(v.REVISION,)]
-                assert not c.execute("SELECT name FROM sqlite_master WHERE name='cards'").fetchall()
+                assert c.execute("SELECT version_num FROM alembic_version").fetchall() == [(v.HEAD_REVISION,)]
+                assert c.execute("SELECT name FROM sqlite_master WHERE name='cards'").fetchall() == [('cards',)]
 assert not owned_path.exists()
 """)
 
@@ -96,7 +113,7 @@ def test_initial_unknown_or_corrupt_state_never_calls_alembic(corruption):
 with v.create_temporary_sqlite_target() as t:
     with v.SQLiteBoundary(t):
         app = v.create_minimal_migration_app(t)
-        v.run_alembic_upgrade(t, app)
+        build_initial(t, app)
         with sqlite3.connect(str(t.path)) as c:
 """ + textwrap.indent(SEED, "            ") + f"""
             c.executescript({corruption!r})
@@ -397,7 +414,7 @@ def test_duplicate_data_is_detected_independently_of_schema_gate():
 with v.create_temporary_sqlite_target() as t:
     with v.SQLiteBoundary(t):
         app = v.create_minimal_migration_app(t)
-        v.run_alembic_upgrade(t,app)
+        build_initial(t,app)
         with sqlite3.connect(str(t.path)) as c:
 """ + textwrap.indent(SEED, "            ") + """
             c.executescript("ALTER TABLE records RENAME TO old_records;"
