@@ -118,3 +118,13 @@ def test_mysql_authorized_cleanup_and_empty_schema(verified_mysql_url, monkeypat
         assert sa.inspect(verification).get_view_names() == []
     finally:
         verification.dispose()
+
+
+def test_mysql_forward_migration_preserves_legacy_data(verified_mysql_url):
+    """Real migrations run only in the fixed CI child; no ordinary app fixture."""
+    import json
+    from tests.mysql_migration_ci import launch
+
+    result = launch()
+    print(json.dumps(result, ensure_ascii=True))
+    assert result['status'] == 'passed', 'mysql_forward_migration_failed'
