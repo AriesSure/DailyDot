@@ -916,6 +916,12 @@ def crud_double(monkeypatch):
     engine = SimpleNamespace(pool=None, dispose=Mock(), begin=Mock(), execute=Mock())
     run.db = SimpleNamespace(session=SessionDouble())
     run.boundary = SimpleNamespace(engine=engine, pool=None)
+    # Existing CRUD tests isolate SQL/diagnostic reads; dedicated tests below
+    # exercise the real diagnostic methods with controlled Connection doubles.
+    def start_probe():
+        run.card_probe = dict.fromkeys(m.CARD_FACT_KEYS)
+    run.start_card_probe = Mock(side_effect=start_probe)
+    run.read_card_residue_after_rollback = Mock()
     schema, data = {'verified': 'schema'}, {'verified': 'data'}
 
     def snapshot(kind, result, actual_engine):
@@ -1076,3 +1082,205 @@ def test_main_emits_only_safe_failure_json_and_nonzero_exit(monkeypatch, capsys)
     assert payload['stage'] == 'crud' and payload['substage'] == 'insert_defaults_commit'
     assert payload['mysql_errno'] == 1062 and payload['facts'] == {} and not captured.err
     assert PASSWORD not in captured.out and URL not in captured.out and 'fictional SQL' not in captured.out
+
+
+@pytest.fixture
+def card_diagnostics(monkeypatch):
+    """Offline Connection doubles; never evidence of actual MySQL results."""
+    run = diagnostic_run()
+    run.substage = 'card_foreign_key'
+    run.app = Flask('card-diagnostic-double')
+    run.server_identity = ('dailydot_test', 'dailydot_test@%', '8.0.46', ())
+    control = SimpleNamespace(version='8.0.46', checks=1, parents=0, residual=0,
+                              probe_error=False, residue_error=False, close_error=False, callback=None)
+    statements, identities = [], []
+    engine = SimpleNamespace(pool=None, dispose=Mock())
+
+    class Connection:
+        def __init__(self, kind):
+            self.kind, self.engine = kind, engine
+        def begin(self):
+            assert self.kind == 'read'
+        def execute(self, statement):
+            sql = str(statement)
+            statements.append((self, sql))
+            assert sql.startswith('SELECT ')
+            if self.kind == 'probe':
+                if control.probe_error:
+                    raise RuntimeError(PASSWORD + URL)
+                assert '@@SESSION.foreign_key_checks' in sql and 'users WHERE id=999' in sql
+                return SimpleNamespace(one=lambda: (control.version, control.checks, control.parents))
+            if control.residue_error:
+                raise RuntimeError(PASSWORD + URL)
+            assert "cards WHERE user_id=999 AND date='2025-01-04'" in sql
+            return SimpleNamespace(scalar_one=lambda: control.residual)
+        def __enter__(self):
+            return self
+        def __exit__(self, *args):
+            if control.close_error:
+                raise RuntimeError(PASSWORD)
+
+    probe, read = Connection('probe'), Connection('read')
+    engine.connect = Mock(return_value=read)
+    run.boundary = SimpleNamespace(engine=engine, pool=None, check=Mock())
+    run.db = SimpleNamespace(session=SimpleNamespace(connection=Mock(return_value=probe), remove=Mock()))
+    def identity(actual_engine, *, connection):
+        assert actual_engine is engine and connection in (probe, read)
+        identities.append(connection)
+        return run.server_identity
+    run.verify_server_identity = Mock(side_effect=identity)
+    def listen(connection, event, callback):
+        assert connection is probe and event == 'rollback'
+        control.callback = callback
+    monkeypatch.setattr(m.sa.event, 'listen', listen)
+    monkeypatch.setattr(m.sa.event, 'remove', Mock())
+    return run, control, probe, read, statements, identities
+
+
+def test_card_probe_reads_the_actual_session_connection(card_diagnostics):
+    run, control, probe, read, statements, identities = card_diagnostics
+    run.start_card_probe()
+    assert identities == [probe] and statements[0][0] is probe
+    assert run.card_probe == {**dict.fromkeys(m.CARD_FACT_KEYS), 'server_version': '8.0.46',
+                              'foreign_key_checks': 1, 'parent_rows': 0}
+    run.boundary.engine.connect.assert_not_called()
+
+
+@pytest.mark.parametrize('field,value', [('version', '8.0.47'), ('checks', 0), ('parents', 1),
+                                       ('version', URL), ('checks', True), ('parents', True)])
+def test_card_preconditions_do_not_accept_wrong_or_untyped_values(card_diagnostics, field, value):
+    run, control, *_ = card_diagnostics
+    setattr(control, field, value)
+    with pytest.raises(m.MigrationSafetyError, match='^migration_card_probe_unverified$'):
+        run.start_card_probe()
+    assert control.callback is None and not run.cleanup_authorized
+
+
+def test_card_query_failure_is_unknown_not_zero(card_diagnostics):
+    run, control, *_ = card_diagnostics
+    control.probe_error = True
+    with pytest.raises(m.MigrationSafetyError) as caught:
+        run.start_card_probe()
+    payload = m.safe_failure(caught.value, run)
+    assert m.validate_result(payload)['facts']['card_foreign_key'] == dict.fromkeys(m.CARD_FACT_KEYS)
+    assert PASSWORD not in json.dumps(payload) and URL not in json.dumps(payload)
+
+
+def test_release_preserves_1216_and_reads_residue_on_separately_authorized_connection(card_diagnostics):
+    run, control, probe, read, statements, identities = card_diagnostics
+    run.start_card_probe()
+    control.callback(probe)  # Simulate the pre-DBAPI rollback event, not an ACK.
+    error = m.MigrationSafetyError('migration_constraint_wrong_error', mysql_errno=1216)
+    run.release(error)
+    assert identities == [probe, read] and statements[-1][0] is read and read is not probe
+    assert run.card_probe['residual_rows'] == 0 and run.card_probe['session_removed'] is True
+    assert run.card_probe['explicit_rollback_returned'] is None
+    payload = m.safe_failure(error, run)
+    assert m.validate_result(payload)['mysql_errno'] == 1216
+    assert payload['error_code'] == 'migration_constraint_wrong_error'
+    assert run.state == 'HEAD_VERIFIED' and not run.cleanup_authorized
+    run.boundary.engine.dispose.assert_called_once()
+    run.db.session.remove.assert_called_once()
+
+
+@pytest.mark.parametrize('failure', ['query', 'identity', 'boundary', 'close', 'invalid_count', 'remove'])
+def test_residue_failure_never_fabricates_zero_or_replaces_primary(card_diagnostics, failure):
+    run, control, probe, *_ = card_diagnostics
+    run.start_card_probe()
+    control.callback(probe)
+    if failure == 'query':
+        control.residue_error = True
+    elif failure == 'identity':
+        run.verify_server_identity.side_effect = m.MigrationSafetyError('migration_server_identity_changed')
+    elif failure == 'boundary':
+        run.boundary.check.side_effect = m.MigrationSafetyError('migration_engine_changed')
+    elif failure == 'close':
+        control.close_error = True
+    elif failure == 'invalid_count':
+        control.residual = True
+    else:
+        run.db.session.remove.side_effect = RuntimeError(PASSWORD)
+    primary = m.MigrationSafetyError('migration_constraint_wrong_error', mysql_errno=1216)
+    with pytest.raises(m.MigrationSafetyError) as caught:
+        try:
+            raise primary
+        finally:
+            run.release(primary)
+    assert caught.value is primary and run.card_probe['residual_rows'] is None
+    assert not run.cleanup_authorized
+    assert m.validate_result(m.safe_failure(primary, run))['mysql_errno'] == 1216
+
+
+@pytest.mark.parametrize('observed,removed,explicit', [(False, True, False), (True, False, False)])
+def test_residue_read_requires_rollback_observation_and_completed_session_operation(card_diagnostics, observed, removed, explicit):
+    run, control, probe, *_ = card_diagnostics
+    run.start_card_probe()
+    run.card_probe.update(rollback_observed=observed, session_removed=removed,
+                          explicit_rollback_returned=explicit)
+    run.read_card_residue_after_rollback()
+    run.boundary.engine.connect.assert_not_called()
+    assert run.card_probe['residual_rows'] is None
+
+
+def test_nonzero_residue_is_recorded_truthfully(card_diagnostics):
+    run, control, probe, *_ = card_diagnostics
+    run.start_card_probe()
+    control.callback(probe)
+    control.residual = 2
+    run.card_probe['explicit_rollback_returned'] = True
+    run.read_card_residue_after_rollback()
+    assert run.card_probe['residual_rows'] == 2
+
+
+@pytest.mark.parametrize('key,value', [('server_version', URL), ('foreign_key_checks', True),
+                                    ('parent_rows', -1), ('residual_rows', '0'),
+                                    ('session_removed', 1), ('password', PASSWORD)])
+def test_card_facts_protocol_is_closed_and_typed(key, value):
+    run = diagnostic_run()
+    run.substage = 'card_foreign_key'
+    run.card_probe = dict.fromkeys(m.CARD_FACT_KEYS)
+    payload = m.safe_failure(m.MigrationSafetyError('migration_constraint_wrong_error'), run)
+    payload['facts']['card_foreign_key'][key] = value
+    with pytest.raises(m.MigrationSafetyError, match='^migration_child_protocol_invalid$'):
+        m.validate_result(payload)
+
+
+@pytest.mark.parametrize('errno', [1216, 1452])
+def test_card_diagnostics_do_not_change_existing_errno_assertion(crud_double, errno):
+    run, control, *_ = crud_double
+    # Override only the card FK probe; earlier unique probes still return 1062.
+    original = run.db.session.commit
+    def commit():
+        if run.substage == 'card_foreign_key':
+            raise driver_error(errno)
+        return original()
+    run.db.session.commit = commit
+    if errno == 1216:
+        with pytest.raises(m.MigrationSafetyError) as caught:
+            run.verify_crud_and_snapshots()
+        result = m.safe_failure(caught.value, run)
+        assert result['error_code'] == 'migration_constraint_wrong_error' and result['mysql_errno'] == 1216
+        assert not run.cleanup_authorized
+    else:
+        run.verify_crud_and_snapshots()
+        assert run.card_probe['explicit_rollback_returned'] is True
+
+
+def test_success_release_does_not_query_already_cleaned_tables(card_diagnostics):
+    run, control, probe, *_ = card_diagnostics
+    run.start_card_probe()
+    control.callback(probe)
+    run.state, run.stage, run.substage = 'EMPTY_VERIFIED', 'release', None
+    run.release()
+    run.boundary.engine.connect.assert_not_called()
+    assert run.state == 'DISPOSED' and not run.cleanup_authorized
+
+
+def test_probe_identity_failure_keeps_original_fixed_error(card_diagnostics):
+    run, *_ = card_diagnostics
+    primary = m.MigrationSafetyError('migration_server_identity_changed')
+    run.verify_server_identity.side_effect = primary
+    with pytest.raises(m.MigrationSafetyError) as caught:
+        run.start_card_probe()
+    assert caught.value is primary
+    assert all(value is None for value in run.card_probe.values())

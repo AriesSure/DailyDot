@@ -45,6 +45,7 @@ CRUD_SUBSTAGES = ('insert_defaults_commit', 'verify_defaults', 'update_commit', 
 # Only checks reachable during CRUD or its following Session/snapshot operations.
 # bind/dependency/admission/cleanup-only codes are deliberately not public here.
 CRUD_ERROR_CODES = (
+    'migration_card_probe_unverified',
     'migration_orm_default_failed', 'migration_orm_update_failed', 'migration_orm_rollback_failed',
     'migration_constraint_wrong_error', 'migration_constraint_not_enforced',
     'migration_orm_delete_failed', 'migration_auto_increment_failed',
@@ -95,6 +96,23 @@ def dbapi_mysql_errno(exc):
         if args and valid_mysql_errno(args[0]):
             return args[0]
     return None
+
+
+CARD_FACT_KEYS = ('server_version', 'foreign_key_checks', 'parent_rows', 'residual_rows',
+                  'rollback_observed', 'session_removed', 'explicit_rollback_returned')
+
+
+def valid_card_facts(value):
+    if not isinstance(value, dict) or set(value) != set(CARD_FACT_KEYS):
+        return False
+    version = value['server_version']
+    return ((version is None or isinstance(version, str) and re.fullmatch(r'8\.0\.\d{1,3}', version))
+            and (value['foreign_key_checks'] is None or type(value['foreign_key_checks']) is int
+                 and value['foreign_key_checks'] in (0, 1))
+            and all(value[key] is None or type(value[key]) is int and 0 <= value[key] <= 2147483647
+                    for key in ('parent_rows', 'residual_rows'))
+            and all(value[key] is None or type(value[key]) is bool
+                    for key in ('rollback_observed', 'session_removed', 'explicit_rollback_returned')))
 
 
 def admit(environ=None):
@@ -451,6 +469,64 @@ class MigrationRun:
         self.collation = None
         self.facts = {}
         self.server_identity = None
+        self.card_probe = None
+        self._card_connection = self._card_rollback_listener = None
+
+    def start_card_probe(self):
+        """Read from the exact Session connection before adding the invalid row."""
+        self.card_probe = dict.fromkeys(CARD_FACT_KEYS)
+        try:
+            connection = self.db.session.connection()
+            self.verify_server_identity(self.boundary.engine, connection=connection)
+            version, checks, parents = connection.execute(sa.text(
+                'SELECT VERSION(), @@SESSION.foreign_key_checks, '
+                '(SELECT COUNT(*) FROM users WHERE id=999)')).one()
+            values = {**self.card_probe, 'server_version': version,
+                      'foreign_key_checks': checks, 'parent_rows': parents}
+            require(valid_card_facts(values), 'migration_card_probe_unverified')
+            self.card_probe = values
+            require(version == self.server_identity[2] and checks == 1 and parents == 0,
+                    'migration_card_probe_unverified')
+
+            def observed(conn):
+                # SQLAlchemy emits this BEFORE the DBAPI rollback: not an ACK.
+                self.card_probe['rollback_observed'] = True
+
+            sa.event.listen(connection, 'rollback', observed)
+            self._card_connection, self._card_rollback_listener = connection, observed
+        except MigrationSafetyError:
+            raise
+        except Exception:
+            raise MigrationSafetyError('migration_card_probe_unverified') from None
+
+    def read_card_residue_after_rollback(self):
+        """Separate read transaction; never assume the probe's physical connection."""
+        if (self.card_probe is None or self.card_probe['rollback_observed'] is not True
+                or not (self.card_probe['session_removed'] is True
+                        or self.card_probe['explicit_rollback_returned'] is True)):
+            return
+        try:
+            self.boundary.check()
+            with self.boundary.engine.connect() as connection:
+                connection.begin()  # Read-only transaction; close rolls it back.
+                self.verify_server_identity(self.boundary.engine, connection=connection)
+                count = connection.execute(sa.text(
+                    "SELECT COUNT(*) FROM cards WHERE user_id=999 AND date='2025-01-04'"
+                )).scalar_one()
+                require(type(count) is int and 0 <= count <= 2147483647,
+                        'migration_card_probe_unverified')
+            self.card_probe['residual_rows'] = count
+        except Exception:
+            self.card_probe['residual_rows'] = None  # Never fabricate zero.
+
+    def remove_card_listener(self):
+        if self._card_connection is not None:
+            try:
+                sa.event.remove(self._card_connection, 'rollback', self._card_rollback_listener)
+            except Exception:
+                pass  # Diagnostic teardown must not replace the primary error.
+            finally:
+                self._card_connection = self._card_rollback_listener = None
 
     def advance(self, expected, following):
         if not (self.state == expected and expected in STATES and following in STATES
@@ -550,8 +626,13 @@ class MigrationRun:
             try:
                 with self.app.app_context():
                     self.db.session.remove()
+                    if self.card_probe is not None:
+                        self.card_probe['session_removed'] = True
+                        if primary is not None and self.stage == 'crud' and self.substage == 'card_foreign_key':
+                            self.read_card_residue_after_rollback()
             except Exception as exc:
                 errors.append(exc)
+        self.remove_card_listener()
         if self.boundary is not None and self.boundary.engine is not None:
             try:
                 owner = self.boundary
@@ -730,6 +811,8 @@ def verify_crud(db, run):
             (Card(user_id=1, date=date(2025, 1, 2)), 1062, 'card_unique'),
             (Card(user_id=999, date=date(2025, 1, 4)), 1452, 'card_foreign_key')):
         run.substage = substage
+        if substage == 'card_foreign_key':
+            run.start_card_probe()
         db.session.add(invalid)
         try:
             db.session.commit()
@@ -737,6 +820,9 @@ def verify_crud(db, run):
             require(type(exc.orig.args[0]) is int and exc.orig.args[0] == expected_errno,
                     'migration_constraint_wrong_error', mysql_errno=dbapi_mysql_errno(exc))
             db.session.rollback()
+            if substage == 'card_foreign_key':
+                run.card_probe['explicit_rollback_returned'] = True
+                run.read_card_residue_after_rollback()
         else:
             raise MigrationSafetyError('migration_constraint_not_enforced')
     run.substage = 'todo_duplicate'
@@ -767,11 +853,14 @@ def safe_failure(exc, run):
             code = exc.code
         if code == 'migration_constraint_wrong_error' and valid_mysql_errno(exc.mysql_errno):
             errno = exc.mysql_errno
+    facts = {}
+    if stage == 'crud' and substage == 'card_foreign_key' and valid_card_facts(run.card_probe):
+        facts = {'card_foreign_key': dict(run.card_probe)}
     return {'status': 'failed', 'stage': stage, 'substage': substage,
             'error_code': code,
             'exception_type': type(exc).__name__ if type(exc).__name__ in EXCEPTION_TYPES else 'OtherError',
             'mysql_errno': errno,
-            'state': run.state if isinstance(run.state, str) and run.state in STATES else 'UNAUTHORIZED', 'facts': {}}
+            'state': run.state if isinstance(run.state, str) and run.state in STATES else 'UNAUTHORIZED', 'facts': facts}
 
 
 def validate_result(value):
@@ -806,7 +895,9 @@ def validate_result(value):
                 and facts['types']['todo_completed'] in ('TINYINT(1)', 'BOOLEAN', 'BOOL'),
                 'migration_child_protocol_invalid')
     else:
-        require(not facts and value['error_code'] is not None
+        require((not facts or value['stage'] == 'crud' and value['substage'] == 'card_foreign_key'
+                 and set(facts) == {'card_foreign_key'} and valid_card_facts(facts['card_foreign_key']))
+                and value['error_code'] is not None
                 and value['exception_type'] is not None, 'migration_child_protocol_invalid')
     return value
 
