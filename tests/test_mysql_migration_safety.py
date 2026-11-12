@@ -906,6 +906,8 @@ def crud_double(monkeypatch):
 
         def rollback(self):
             touch('rollback')
+            if run.substage == 'card_foreign_key':
+                run.card_probe['rollback_observed'] = True
 
         def expire_all(self):
             touch('expire_all')
@@ -920,8 +922,9 @@ def crud_double(monkeypatch):
     # exercise the real diagnostic methods with controlled Connection doubles.
     def start_probe():
         run.card_probe = dict.fromkeys(m.CARD_FACT_KEYS)
+        run.card_probe.update(server_version='8.0.46', foreign_key_checks=1, parent_rows=0)
     run.start_card_probe = Mock(side_effect=start_probe)
-    run.read_card_residue_after_rollback = Mock()
+    run.read_card_residue_after_rollback = Mock(side_effect=lambda: run.card_probe.update(residual_rows=0))
     schema, data = {'verified': 'schema'}, {'verified': 'data'}
 
     def snapshot(kind, result, actual_engine):
@@ -1246,7 +1249,7 @@ def test_card_facts_protocol_is_closed_and_typed(key, value):
 
 
 @pytest.mark.parametrize('errno', [1216, 1452])
-def test_card_diagnostics_do_not_change_existing_errno_assertion(crud_double, errno):
+def test_card_foreign_errno_compatibility_keeps_rollback_residue_and_later_crud(crud_double, errno):
     run, control, *_ = crud_double
     # Override only the card FK probe; earlier unique probes still return 1062.
     original = run.db.session.commit
@@ -1255,15 +1258,13 @@ def test_card_diagnostics_do_not_change_existing_errno_assertion(crud_double, er
             raise driver_error(errno)
         return original()
     run.db.session.commit = commit
-    if errno == 1216:
-        with pytest.raises(m.MigrationSafetyError) as caught:
-            run.verify_crud_and_snapshots()
-        result = m.safe_failure(caught.value, run)
-        assert result['error_code'] == 'migration_constraint_wrong_error' and result['mysql_errno'] == 1216
-        assert not run.cleanup_authorized
-    else:
-        run.verify_crud_and_snapshots()
-        assert run.card_probe['explicit_rollback_returned'] is True
+    run.verify_crud_and_snapshots()
+    assert run.card_probe['explicit_rollback_returned'] is True
+    assert run.card_probe['rollback_observed'] is True and run.card_probe['residual_rows'] == 0
+    run.read_card_residue_after_rollback.assert_called_once()
+    steps = {step for step, operation in crud_double[2]}
+    assert {'todo_duplicate', 'card_delete', 'card_survivor', 'schema_snapshot', 'data_snapshot'} <= steps
+    assert not run.cleanup_authorized and run.state == 'HEAD_VERIFIED'
 
 
 def test_success_release_does_not_query_already_cleaned_tables(card_diagnostics):
@@ -1284,3 +1285,88 @@ def test_probe_identity_failure_keeps_original_fixed_error(card_diagnostics):
         run.start_card_probe()
     assert caught.value is primary
     assert all(value is None for value in run.card_probe.values())
+
+
+@pytest.mark.parametrize('errno', [1062, 1451, 1215, 1048, None, True, '1216'])
+def test_card_fk_rejects_other_or_unverified_errnos(crud_double, errno):
+    run, _, operations, engine, *_ = crud_double
+    original = run.db.session.commit
+    def commit():
+        if run.substage == 'card_foreign_key':
+            raise driver_error(errno)
+        return original()
+    run.db.session.commit = commit
+    with pytest.raises(m.MigrationSafetyError) as caught:
+        run.verify_crud_and_snapshots()
+    payload = m.validate_result(m.safe_failure(caught.value, run))
+    assert payload['error_code'] == 'migration_constraint_wrong_error'
+    assert payload['mysql_errno'] == (errno if type(errno) is int else None)
+    assert run.state == 'HEAD_VERIFIED' and not run.cleanup_authorized
+    assert not any(step == 'todo_duplicate' for step, operation in operations)
+    engine.begin.assert_not_called()
+    assert PASSWORD not in json.dumps(payload) and URL not in json.dumps(payload)
+
+
+@pytest.mark.parametrize('substage', ['record_unique', 'card_unique'])
+@pytest.mark.parametrize('errno', [1216, 1452])
+def test_foreign_errnos_cannot_satisfy_other_constraint_probes(crud_double, substage, errno):
+    run, *_ = crud_double
+    original = run.db.session.commit
+    def commit():
+        if run.substage == substage:
+            raise driver_error(errno)
+        return original()
+    run.db.session.commit = commit
+    with pytest.raises(m.MigrationSafetyError) as caught:
+        run.verify_crud_and_snapshots()
+    payload = m.safe_failure(caught.value, run)
+    assert payload['substage'] == substage and payload['mysql_errno'] == errno
+    assert payload['error_code'] == 'migration_constraint_wrong_error' and not run.cleanup_authorized
+
+
+def test_missing_parent_without_integrity_error_still_fails(crud_double):
+    run, *_ = crud_double
+    original = run.db.session.commit
+    run.db.session.commit = lambda: None if run.substage == 'card_foreign_key' else original()
+    with pytest.raises(m.MigrationSafetyError, match='^migration_constraint_not_enforced$'):
+        run.verify_crud_and_snapshots()
+    run.read_card_residue_after_rollback.assert_not_called()
+    assert run.state == 'HEAD_VERIFIED' and not run.cleanup_authorized
+
+
+@pytest.mark.parametrize('field,value', [('residual_rows', 1), ('residual_rows', None),
+                                       ('residual_rows', False), ('foreign_key_checks', 0),
+                                       ('parent_rows', 1), ('rollback_observed', None)])
+@pytest.mark.parametrize('errno', [1216, 1452])
+def test_accepted_errno_requires_verified_clean_rollback_facts(crud_double, field, value, errno):
+    run, _, operations, engine, *_ = crud_double
+    original = run.db.session.commit
+    def commit():
+        if run.substage == 'card_foreign_key':
+            raise driver_error(errno)
+        return original()
+    run.db.session.commit = commit
+    def read_residue():
+        run.card_probe.update(residual_rows=0)
+        run.card_probe[field] = value
+    run.read_card_residue_after_rollback.side_effect = read_residue
+    with pytest.raises(m.MigrationSafetyError) as caught:
+        run.verify_crud_and_snapshots()
+    payload = m.safe_failure(caught.value, run)
+    assert payload['error_code'] == 'migration_card_probe_unverified' and payload['mysql_errno'] == errno
+    assert not run.cleanup_authorized and run.state == 'HEAD_VERIFIED'
+    assert not any(step == 'todo_duplicate' for step, operation in operations)
+    engine.begin.assert_not_called()
+
+
+def test_fk_requires_native_dbapi_integrity_error(crud_double):
+    run, *_ = crud_double
+    original = run.db.session.commit
+    def commit():
+        if run.substage == 'card_foreign_key':
+            raise sa.exc.IntegrityError(URL, None, pymysql.OperationalError(1216, PASSWORD))
+        return original()
+    run.db.session.commit = commit
+    with pytest.raises(m.MigrationSafetyError, match='^migration_constraint_wrong_error$'):
+        run.verify_crud_and_snapshots()
+    assert not run.cleanup_authorized

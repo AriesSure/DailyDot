@@ -817,12 +817,23 @@ def verify_crud(db, run):
         try:
             db.session.commit()
         except sa.exc.IntegrityError as exc:
-            require(type(exc.orig.args[0]) is int and exc.orig.args[0] == expected_errno,
-                    'migration_constraint_wrong_error', mysql_errno=dbapi_mysql_errno(exc))
+            actual_errno = dbapi_mysql_errno(exc)
+            if substage == 'card_foreign_key':
+                require(isinstance(exc.orig, pymysql.IntegrityError) and actual_errno in (1216, 1452),
+                        'migration_constraint_wrong_error', mysql_errno=actual_errno)
+            else:
+                require(type(exc.orig.args[0]) is int and exc.orig.args[0] == expected_errno,
+                        'migration_constraint_wrong_error', mysql_errno=actual_errno)
             db.session.rollback()
             if substage == 'card_foreign_key':
                 run.card_probe['explicit_rollback_returned'] = True
                 run.read_card_residue_after_rollback()
+                require(valid_card_facts(run.card_probe)
+                        and run.card_probe['foreign_key_checks'] == 1 and run.card_probe['parent_rows'] == 0
+                        and run.card_probe['rollback_observed'] is True
+                        and run.card_probe['explicit_rollback_returned'] is True
+                        and run.card_probe['residual_rows'] == 0,
+                        'migration_card_probe_unverified', mysql_errno=actual_errno)
         else:
             raise MigrationSafetyError('migration_constraint_not_enforced')
     run.substage = 'todo_duplicate'
@@ -851,7 +862,7 @@ def safe_failure(exc, run):
     if isinstance(exc, MigrationSafetyError):
         if exc.code == 'migration_server_identity_changed' or stage == 'crud' and exc.code in CRUD_ERROR_CODES:
             code = exc.code
-        if code == 'migration_constraint_wrong_error' and valid_mysql_errno(exc.mysql_errno):
+        if code in ('migration_constraint_wrong_error', 'migration_card_probe_unverified') and valid_mysql_errno(exc.mysql_errno):
             errno = exc.mysql_errno
     facts = {}
     if stage == 'crud' and substage == 'card_foreign_key' and valid_card_facts(run.card_probe):
