@@ -26,7 +26,14 @@ class ConfiguredModel:
         response = llm._get_client().with_options(timeout=20, max_retries=0).chat.completions.create(
             model=llm.model, messages=messages, tools=tools, tool_choice='auto',
             temperature=0.3, max_tokens=1024)
-        message = response.choices[0].message
+        choice = response.choices[0]
+        if choice.finish_reason == 'length':
+            raise AgentError('agent_response_truncated')
+        message = choice.message
+        if (choice.finish_reason not in ('stop', 'tool_calls')
+                or (choice.finish_reason == 'tool_calls') != bool(message.tool_calls)
+                or (not message.tool_calls and not (message.content or '').strip())):
+            raise AgentError('agent_response_invalid')
         return {'content': message.content or '', 'tool_calls': [
             {'id': c.id, 'name': c.function.name, 'arguments': c.function.arguments}
             for c in (message.tool_calls or [])]}
@@ -109,7 +116,7 @@ def answer(question, *, model=None):
                 config={'recursion_limit': 14})
         return {'ok': True, 'answer': result['messages'][-1]['content'], 'error_code': None}
     except AgentError as exc:
-        codes = {'agent_auth_required', 'agent_input_invalid', 'agent_model_unavailable',
+        codes = {'agent_response_truncated', 'agent_auth_required', 'agent_input_invalid', 'agent_model_unavailable',
                  'agent_step_limit', 'agent_context_limit', 'agent_response_invalid',
                  'agent_tool_limit', 'agent_tool_arguments_invalid', 'agent_tool_unknown',
                  'agent_date_range_invalid', 'agent_result_limit'}
