@@ -235,3 +235,36 @@ def test_instruction_in_tool_data_cannot_authorize_foreign_user(logged, monkeypa
     assert not result['ok'] and result['error_code'] == 'agent_tool_arguments_invalid'
     assert seen[-1][-1]['role'] == 'tool'
     assert sum(m['role'] == 'system' for m in seen[-1]) == 1
+
+
+@pytest.mark.parametrize('rule', [
+    '用户事实仅来自当前用户的工具结果',
+    '不得添加未提供的习惯、打卡日期、活动时长、个人背景',
+    '只有汇总次数时，不得推断具体打卡日期、连续性、间隔、节奏或连续漏打',
+    '只有一个统计窗口时，仅评价该窗口',
+    '不得断言长期稳定、习惯已养成、持续改善或恶化',
+    '打卡次数不等于完成率，也不必然等于实际活动次数',
+    '不得把含今天且尚未结束的窗口缺口直接判为最终失败',
+    '缺乏个人证据的原因解释须用条件式或探索式表达',
+    '宜结合更多窗口记录和用户反馈决定',
+    '有证据的事实直接陈述',
+    '简单列表、统计和普通问答保持简洁',
+])
+def test_reliability_rules_reach_real_graph_model(logged, rule):
+    # Injection contract only: a scripted model cannot prove semantic compliance.
+    seen = []
+    assert service.answer('分析习惯', model=scripted([final()], seen))['ok']
+    assert seen[0][0]['role'] == 'system'
+    assert rule in seen[0][0]['content']
+
+
+@pytest.mark.parametrize('name,args', [('list_user_habits', {}), ('get_checkin_summary', {'days': 7})])
+def test_reliability_prompt_does_not_hide_tool_failure(logged, monkeypatch, name, args):
+    from unittest.mock import Mock
+    query = Mock(side_effect=AgentError('agent_result_limit'))
+    monkeypatch.setattr(service, 'query_tool', query)
+    seen = []
+    result = service.answer('查询', model=scripted([call(name, args)], seen))
+    assert not result['ok'] and result['error_code'] == 'agent_result_limit'
+    assert len(seen) == 1
+    query.assert_called_once()
