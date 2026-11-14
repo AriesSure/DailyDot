@@ -31,14 +31,16 @@ from sqlalchemy.dialects import mysql
 
 ROOT = Path(__file__).resolve().parents[1]
 INITIAL = 'df8b049a3e7e'
-HEAD = '9a097b8e080b'
-TABLES = frozenset({'users', 'habits', 'todos', 'records', 'cards', 'alembic_version'})
+ALIGNED = '9a097b8e080b'
+HEAD = '716951abf77d'
+TABLES = frozenset({'users', 'habits', 'todos', 'records', 'cards', 'alembic_version',
+                    'conversations', 'chat_turns', 'chat_messages'})
 STATES = ('UNAUTHORIZED', 'TARGET_VALIDATED', 'EMPTY_OWNED', 'INITIAL_VERIFIED',
           'HEAD_VERIFIED', 'DATA_AND_DOWNGRADE_VERIFIED', 'CLEANUP_AUTHORIZED',
           'EMPTY_VERIFIED', 'DISPOSED')
 STAGES = ('admission', 'application', 'identity', 'initial', 'history', 'forward',
           'schema', 'crud', 'repeat', 'downgrade', 'cleanup', 'release', 'complete')
-CRUD_SUBSTAGES = ('insert_defaults_commit', 'verify_defaults', 'update_commit', 'verify_update',
+CRUD_SUBSTAGES = ('chat_crud', 'insert_defaults_commit', 'verify_defaults', 'update_commit', 'verify_update',
                  'rollback_probe', 'record_unique', 'card_unique', 'card_foreign_key',
                  'todo_duplicate', 'card_delete', 'card_survivor', 'session_remove',
                  'schema_snapshot', 'data_snapshot')
@@ -62,6 +64,68 @@ GENERAL_ERROR_CODES = ('mysql_forward_migration_failed', 'forward_migration_pref
                        'migration_server_identity_changed')
 EXCEPTION_TYPES = ('MigrationSafetyError', 'RuntimeError', 'OperationalError', 'IntegrityError',
                    'DBAPIError', 'ProgrammingError', 'CommandError', 'TimeoutError', 'AssertionError', 'OtherError')
+
+CHECK_RULES = {
+    'conversations': {'ck_conversations_next_turn': 'next_turn_no >= 1'},
+    'chat_turns': {
+        'ck_chat_turns_status': (
+            "status IN ('pending','completed','failed','interrupted') "
+            "AND length(status) = length(trim(status))"),
+        'ck_chat_turns_number': 'turn_no >= 1',
+    },
+    'chat_messages': {
+        'ck_chat_messages_role': "role IN ('user','assistant','tool') AND length(role) = length(trim(role))",
+        'ck_chat_messages_position': 'position >= 0',
+    },
+}
+CASCADE_EDGES = {
+    'chat_turns': (('conversation_id',), 'conversations', ('id',)),
+    'chat_messages': (('turn_id',), 'chat_turns', ('id',)),
+}
+
+
+def normalize_check(rule):
+    # MySQL reflection adds parentheses, backticks and charset introducers.
+    # Keep identifiers, operators and case-sensitive literal values intact.
+    parts = re.findall(r"'(?:''|[^'])*'|[^']+", rule)
+    return ''.join(part if part.startswith("'") else re.sub(r"\s+|`|_utf8mb4$", '', part).lower()
+                   for part in parts)
+
+
+def strip_outer_check(rule):
+    while rule.startswith('(') and rule.endswith(')'):
+        depth, quoted, outer = 0, False, True
+        for index, char in enumerate(rule):
+            if char == "'":
+                quoted = not quoted
+            elif not quoted:
+                depth += (char == '(') - (char == ')')
+                if depth == 0 and index < len(rule)-1:
+                    outer = False
+                    break
+        if not outer:
+            break
+        rule = rule[1:-1]
+    return rule
+
+
+def verify_checks(name, rows):
+    expected = {key: normalize_check(value) for key, value in CHECK_RULES.get(name, {}).items()}
+    require(len(rows) == len(expected) and len({row['name'] for row in rows}) == len(rows),
+            'migration_unknown_check')
+    for row in rows:
+        require(row['name'] in expected, 'migration_unknown_check')
+        canonical = expected[row['name']]
+        allowed = {canonical}
+        # Finite SHOW CREATE variants: parentheses may enclose whole operands,
+        # never arbitrary regrouping across the AND/equality boundary.
+        if 'and' in canonical:
+            left, right = canonical.split('and', 1)
+            allowed.update(a+'and'+b for a in (left, '('+left+')') for b in (right, '('+right+')'))
+        require(strip_outer_check(normalize_check(row['sqltext'])) in allowed, 'migration_unknown_check')
+    return tuple(sorted(expected.items()))
+
+
 DROP_SQL = MappingProxyType({name: 'DROP TABLE `' + name + '`' for name in TABLES})
 SELECT_SQL = MappingProxyType({name: 'SELECT * FROM `' + name + '` ORDER BY ' +
               ('version_num' if name == 'alembic_version' else 'id') for name in TABLES})
@@ -376,18 +440,26 @@ def schema_snapshot(engine):
                         for i in inspector.get_indexes(name)), 'migration_index_options_changed')
             foreign = []
             foreign_names = []
+            foreign_actions = []
             for fk in inspector.get_foreign_keys(name):
                 require(fk.get('referred_schema') in (None, 'dailydot_test'), 'migration_foreign_schema')
                 options = fk.get('options', {})
-                require(all(options.get(key) in (None, 'RESTRICT', 'NO ACTION')
-                            for key in ('ondelete', 'onupdate'))
+                edge = (tuple(fk['constrained_columns']), fk['referred_table'], tuple(fk['referred_columns']))
+                cascade = name in CASCADE_EDGES
+                require(not cascade or edge == CASCADE_EDGES[name], 'migration_foreign_options')
+                action = options.get('ondelete') or 'RESTRICT'
+                require(action == 'CASCADE' if cascade else action in ('RESTRICT', 'NO ACTION'),
+                        'migration_foreign_options')
+                require(options.get('onupdate') in (None, 'RESTRICT', 'NO ACTION')
                         and not options.get('deferrable') and options.get('initially') is None,
                         'migration_foreign_options')
+                foreign_actions.append((fk['name'], 'RESTRICT' if action == 'NO ACTION' else action))
                 foreign.append((tuple(fk['constrained_columns']), fk['referred_table'],
                                 tuple(fk['referred_columns'])))
                 foreign_names.append(fk['name'])
-            require(not inspector.get_check_constraints(name), 'migration_unknown_check')
-            result[name] = {'columns': columns, 'indexes': indexes,
+            checks = verify_checks(name, inspector.get_check_constraints(name))
+            result[name] = {'columns': columns, 'indexes': indexes, 'checks': checks,
+                            'foreign_actions': tuple(sorted(foreign_actions)),
                             'pk': tuple(inspector.get_pk_constraint(name)['constrained_columns']),
                             'foreign': tuple(sorted(foreign)),
                             'foreign_names': tuple(sorted(foreign_names)),
@@ -408,11 +480,24 @@ def verify_head(schema, metadata, collation):
             _, kind, nullable, default, autoincrement, generated = columns[expected.name]
             expected_kind = str(expected.type.compile(dialect=mysql.dialect()))
             allowed = {'TINYINT(1)', 'BOOLEAN', 'BOOL'} if isinstance(expected.type, sa.Boolean) else {expected_kind}
+            if (name, expected.name) in {('chat_turns', 'status'), ('chat_messages', 'role')}:
+                allowed.add('VARCHAR(16) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin')
             if expected_kind == 'INTEGER':
                 allowed.add('INTEGER(11)')
             require(kind in allowed and nullable == expected.nullable and default is None
-                    and not generated and autoincrement == (expected.name == 'id'),
+                    and not generated and autoincrement == (expected.name == 'id' and name != 'conversations'),
                     'migration_head_column_mismatch')
+        require(actual['checks'] == tuple(sorted((key, normalize_check(value))
+                for key, value in CHECK_RULES.get(name, {}).items())), 'migration_unknown_check')
+        require(actual['checks'] == verify_checks(name, [
+            {'name': c.name, 'sqltext': str(c.sqltext)} for c in table.constraints
+            if isinstance(c, sa.CheckConstraint)]), 'migration_unknown_check')
+        if name == 'conversations':
+            require(isinstance(table.c.id.type, sa.String) and table.c.id.type.length == 32,
+                    'migration_head_column_mismatch')
+        expected_actions = tuple(sorted((c.name, c.ondelete or 'RESTRICT') for c in table.foreign_key_constraints))
+        if name in CHECK_RULES:
+            require(actual['foreign_actions'] == expected_actions, 'migration_foreign_options')
         indexes = {(i.name, bool(i.unique), tuple(c.name for c in i.columns)) for i in table.indexes}
         uniques = {(c.name, tuple(x.name for x in c.columns)) for c in table.constraints
                    if isinstance(c, sa.UniqueConstraint)}
@@ -430,7 +515,8 @@ def verify_head(schema, metadata, collation):
     version_table = schema['alembic_version']
     require(version_table['pk'] == ('version_num',) and not version_table['indexes']
             and not version_table['foreign'] and not version_table['unique']
-            and not version_table['foreign_names']
+            and not version_table['foreign_names'] and not version_table['checks']
+            and not version_table['foreign_actions']
             and version_table['columns'] == (('version_num', 'VARCHAR(32)', False, None, False, False),)
             and version_table['collation'] == collation and version_table['charset'] == 'utf8mb4',
             'migration_version_schema_mismatch')
@@ -447,7 +533,8 @@ def cleanup_order(schema):
     require(all(parents <= TABLES for parents in graph.values()), 'migration_cleanup_fk_unknown')
     order = []
     # Stable candidates only; dependency edges determine which can be removed.
-    priority = ('records', 'todos', 'cards', 'habits', 'users', 'alembic_version')
+    priority = ('records', 'todos', 'cards', 'habits', 'chat_messages', 'chat_turns',
+                'conversations', 'users', 'alembic_version')
     while graph:
         leaves = [name for name in priority if name in graph
                   and not any(name in parents for child, parents in graph.items() if child != name)]
@@ -696,7 +783,8 @@ class MigrationRun:
                     command.upgrade(config, INITIAL)
                     self.verify_server_identity(engine)
                     with engine.connect() as connection:
-                        ScriptDirectory.from_config(config).get_revision(HEAD).module.validate_initial_schema(connection)
+                        aligned = ScriptDirectory.from_config(config).get_revision(ALIGNED).module
+                        aligned.validate_initial_schema(connection)
                     self.advance('EMPTY_OWNED', 'INITIAL_VERIFIED')
                     self.stage = 'history'
                     seed_history(engine)
@@ -728,6 +816,8 @@ class MigrationRun:
                                 and connection.execute(sa.text('SELECT count(*) FROM todos WHERE completed<>0')).scalar_one() == 0,
                                 'migration_history_changed')
                     self.advance('INITIAL_VERIFIED', 'HEAD_VERIFIED')
+                    self.substage = 'chat_crud'
+                    verify_chat_crud(self.db)
                     self.verify_crud_and_snapshots()
                     self.substage = None
                     self.stage = 'repeat'
@@ -944,6 +1034,51 @@ def main():
             result = safe_failure(exc, run)
     print(json.dumps(result, ensure_ascii=True))
     return 0 if result['status'] == 'passed' else 1
+
+
+def verify_chat_crud(db):
+    """Real CI-only CRUD/constraint probes on the three migrated tables."""
+    from app.models import Conversation, ChatTurn, ChatMessage
+    from sqlalchemy.exc import IntegrityError
+    convo = Conversation(user_id=1)
+    db.session.add(convo)
+    db.session.commit()
+    require(len(convo.id) == 32 and convo.title == '新对话' and convo.next_turn_no == 1,
+            'migration_orm_default_failed')
+    turn = ChatTurn(conversation_id=convo.id, turn_no=1, client_request_id='a' * 32,
+                    request_digest='b' * 64)
+    db.session.add(turn)
+    db.session.commit()
+    msg = ChatMessage(turn_id=turn.id, position=0, role='assistant', tool_calls=[
+        {'id': 'synthetic', 'type': 'function', 'function': {'name': 'list_user_habits', 'arguments': '{}'}}])
+    db.session.add(msg)
+    db.session.commit()
+    require(msg.tool_calls[0]['id'] == 'synthetic' and msg.created_at.utcoffset().total_seconds() == 0,
+            'migration_orm_default_failed')
+    probes = (
+        ChatTurn(conversation_id=convo.id, turn_no=1, client_request_id='c' * 32, request_digest='d' * 64),
+        ChatMessage(turn_id=99999999, position=0, role='user'),
+        ChatMessage(turn_id=turn.id, position=1, role='system'),
+        ChatTurn(conversation_id=convo.id, turn_no=2, client_request_id='e' * 32,
+                 request_digest='f' * 64, status='invalid'),
+    )
+    for probe in probes:
+        try:
+            db.session.add(probe)
+            db.session.commit()
+        except IntegrityError:
+            db.session.rollback()
+        else:
+            raise MigrationSafetyError('migration_constraint_not_enforced')
+    turn.status = 'completed'
+    db.session.commit()
+    cid = convo.id
+    db.session.execute(sa.delete(Conversation).where(Conversation.id == cid))
+    db.session.commit()
+    db.session.expire_all()
+    require(db.session.query(ChatTurn).filter_by(conversation_id=cid).count() == 0
+            and db.session.query(ChatMessage).count() == 0, 'migration_orm_delete_failed')
+    db.session.remove()
 
 
 if __name__ == '__main__':

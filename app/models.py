@@ -1,3 +1,5 @@
+import json
+from uuid import uuid4
 from datetime import datetime
 from datetime import date, time
 import datetime as dt
@@ -116,3 +118,133 @@ class Card(db.Model):
         return (f'Card(id={self.id}, date={self.date}, user_id={self.user_id}, '
                 f'weekday="{self.weekday}", streak={self.streak}, '
                 f'habits_completed={self.habits_completed})')
+
+
+def chat_utcnow():
+    """UTC in a portable, timezone-naive SQL DATETIME representation."""
+    return datetime.now(dt.timezone.utc).replace(tzinfo=None)
+
+
+class ChatUTCDateTime(sa.TypeDecorator):
+    impl = sa.DateTime
+    cache_ok = True
+
+    def process_bind_param(self, value, dialect):
+        if value is not None and value.tzinfo is not None:
+            return value.astimezone(dt.timezone.utc).replace(tzinfo=None)
+        return value  # Explicit naive values are interpreted as UTC.
+
+    def process_result_value(self, value, dialect):
+        if value is None:
+            return None
+        return (value.replace(tzinfo=dt.timezone.utc) if value.tzinfo is None
+                else value.astimezone(dt.timezone.utc))
+
+
+class Conversation(db.Model):
+    __tablename__ = 'conversations'
+    __table_args__ = (
+        sa.PrimaryKeyConstraint('id', name='pk_conversations'),
+        sa.ForeignKeyConstraint(['user_id'], ['users.id'], name='fk_conversations_user', ondelete='RESTRICT'),
+        sa.Index('ix_conversations_owner_updated', 'user_id', 'updated_at', 'id'),
+        sa.CheckConstraint('next_turn_no >= 1', name='ck_conversations_next_turn'),
+    )
+    id: so.Mapped[str] = so.mapped_column(sa.String(32), default=lambda: uuid4().hex)
+    user_id: so.Mapped[int] = so.mapped_column(sa.Integer, nullable=False)
+    title: so.Mapped[str] = so.mapped_column(sa.String(120), default='新对话', nullable=False)
+    created_at: so.Mapped[datetime] = so.mapped_column(ChatUTCDateTime(), default=chat_utcnow, nullable=False)
+    updated_at: so.Mapped[datetime] = so.mapped_column(ChatUTCDateTime(), default=chat_utcnow, nullable=False)
+    next_turn_no: so.Mapped[int] = so.mapped_column(sa.Integer, default=1, nullable=False)
+    active_request_id: so.Mapped[Optional[str]] = so.mapped_column(sa.String(32), nullable=True)
+    active_started_at: so.Mapped[Optional[datetime]] = so.mapped_column(ChatUTCDateTime(), nullable=True)
+    archived_at: so.Mapped[Optional[datetime]] = so.mapped_column(ChatUTCDateTime(), nullable=True)
+    turns: so.Mapped[list['ChatTurn']] = relationship(
+        back_populates='conversation', cascade='all, delete-orphan', passive_deletes=True)
+
+
+class ChatTurn(db.Model):
+    __tablename__ = 'chat_turns'
+    __table_args__ = (
+        sa.PrimaryKeyConstraint('id', name='pk_chat_turns'),
+        sa.ForeignKeyConstraint(['conversation_id'], ['conversations.id'],
+                                name='fk_chat_turns_conversation', ondelete='CASCADE'),
+        sa.UniqueConstraint('conversation_id', 'turn_no', name='uq_chat_turns_number'),
+        sa.UniqueConstraint('conversation_id', 'client_request_id', name='uq_chat_turns_request'),
+        sa.Index('ix_chat_turns_conversation', 'conversation_id'),
+        sa.CheckConstraint(
+            "status IN ('pending','completed','failed','interrupted') AND length(status) = length(trim(status))",
+            name='ck_chat_turns_status'),
+        sa.CheckConstraint('turn_no >= 1', name='ck_chat_turns_number'),
+    )
+    id: so.Mapped[int] = so.mapped_column(primary_key=True)
+    conversation_id: so.Mapped[str] = so.mapped_column(sa.String(32), nullable=False)
+    turn_no: so.Mapped[int] = so.mapped_column(sa.Integer, nullable=False)
+    client_request_id: so.Mapped[str] = so.mapped_column(sa.String(32), nullable=False)
+    request_digest: so.Mapped[str] = so.mapped_column(sa.String(64), nullable=False)
+    status: so.Mapped[str] = so.mapped_column(
+        sa.String(16, collation='utf8mb4_bin').with_variant(sa.String(16, collation='BINARY'), 'sqlite'),
+        default='pending', nullable=False)
+    created_at: so.Mapped[datetime] = so.mapped_column(ChatUTCDateTime(), default=chat_utcnow, nullable=False)
+    finished_at: so.Mapped[Optional[datetime]] = so.mapped_column(ChatUTCDateTime(), nullable=True)
+    error_code: so.Mapped[Optional[str]] = so.mapped_column(sa.String(64), nullable=True)
+    conversation: so.Mapped['Conversation'] = relationship(back_populates='turns')
+    messages: so.Mapped[list['ChatMessage']] = relationship(
+        back_populates='turn', cascade='all, delete-orphan', passive_deletes=True)
+
+    @so.validates('client_request_id', 'request_digest')
+    def validate_hex(self, key, value):
+        size = 32 if key == 'client_request_id' else 64
+        if not isinstance(value, str) or len(value) != size or any(c not in '0123456789abcdef' for c in value):
+            raise ValueError('chat_invalid_hex_identifier')
+        return value
+
+
+class ChatMessage(db.Model):
+    __tablename__ = 'chat_messages'
+    __table_args__ = (
+        sa.PrimaryKeyConstraint('id', name='pk_chat_messages'),
+        sa.ForeignKeyConstraint(['turn_id'], ['chat_turns.id'], name='fk_chat_messages_turn', ondelete='CASCADE'),
+        sa.UniqueConstraint('turn_id', 'position', name='uq_chat_messages_position'),
+        sa.Index('ix_chat_messages_turn', 'turn_id'),
+        sa.CheckConstraint(
+            "role IN ('user','assistant','tool') AND length(role) = length(trim(role))",
+            name='ck_chat_messages_role'),
+        sa.CheckConstraint('position >= 0', name='ck_chat_messages_position'),
+    )
+    id: so.Mapped[int] = so.mapped_column(primary_key=True)
+    turn_id: so.Mapped[int] = so.mapped_column(sa.Integer, nullable=False)
+    position: so.Mapped[int] = so.mapped_column(sa.Integer, nullable=False)
+    role: so.Mapped[str] = so.mapped_column(
+        sa.String(16, collation='utf8mb4_bin').with_variant(sa.String(16, collation='BINARY'), 'sqlite'),
+        nullable=False)
+    content: so.Mapped[Optional[str]] = so.mapped_column(sa.Text, nullable=True)
+    tool_calls: so.Mapped[Optional[list]] = so.mapped_column(sa.JSON(none_as_null=True), nullable=True)
+    tool_call_id: so.Mapped[Optional[str]] = so.mapped_column(sa.String(100), nullable=True)
+    tool_name: so.Mapped[Optional[str]] = so.mapped_column(sa.String(64), nullable=True)
+    created_at: so.Mapped[datetime] = so.mapped_column(ChatUTCDateTime(), default=chat_utcnow, nullable=False)
+    turn: so.Mapped['ChatTurn'] = relationship(back_populates='messages')
+
+    @so.validates('tool_calls')
+    def validate_tool_calls(self, key, value):
+        if value is None:
+            return None
+        if type(value) is not list:
+            raise ValueError('chat_invalid_tool_calls')
+        seen = set()
+        for call in value:
+            if type(call) is not dict or set(call) != {'id', 'type', 'function'}:
+                raise ValueError('chat_invalid_tool_calls')
+            cid, function = call['id'], call['function']
+            if (type(cid) is not str or not 1 <= len(cid) <= 100 or cid in seen
+                    or call['type'] != 'function' or type(function) is not dict
+                    or set(function) != {'name', 'arguments'}):
+                raise ValueError('chat_invalid_tool_calls')
+            if function['name'] not in ('list_user_habits', 'get_checkin_summary'):
+                raise ValueError('chat_invalid_tool_calls')
+            try:
+                if type(function['arguments']) is not str or type(json.loads(function['arguments'])) is not dict:
+                    raise ValueError()
+            except (TypeError, ValueError):
+                raise ValueError('chat_invalid_tool_calls') from None
+            seen.add(cid)
+        return value

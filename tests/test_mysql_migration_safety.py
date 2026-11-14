@@ -244,15 +244,23 @@ def expected_schema(metadata):
         columns = []
         for c in table.c:
             kind = 'TINYINT(1)' if isinstance(c.type, sa.Boolean) else str(c.type.compile(dialect=mysql.dialect()))
-            columns.append((c.name, kind, c.nullable, None, c.name == 'id', False))
-        result[table.name] = {'columns': tuple(columns), 'pk': ('id',), 'indexes': tuple(sorted(indexes)),
+            columns.append((c.name, kind, c.nullable, None, c.name == 'id' and table.name != 'conversations', False))
+        result[table.name] = {'checks': m.verify_checks(table.name, [
+            {'name': c.name, 'sqltext': str(c.sqltext)} for c in table.constraints
+            if isinstance(c, sa.CheckConstraint)]),
+            'foreign_actions': tuple(sorted((c.name, c.ondelete or 'RESTRICT')
+                                            for c in table.foreign_key_constraints)),
+            'columns': tuple(columns), 'pk': ('id',), 'indexes': tuple(sorted(indexes)),
             'unique': tuple(sorted((name, cols) for name, unique, cols in indexes if unique)),
             'foreign': tuple(sorted((tuple(f.parent.name for f in c.elements), c.elements[0].column.table.name,
                                     tuple(f.column.name for f in c.elements)) for c in table.foreign_key_constraints)),
-            'foreign_names': tuple(table.name + '_ibfk_' + str(i + 1) for i, _ in enumerate(table.foreign_key_constraints)),
+            'foreign_names': tuple(sorted(c.name or table.name + '_ibfk_' + str(i + 1)
+                                          for i, c in enumerate(table.foreign_key_constraints))),
             'collation': 'utf8mb4_0900_ai_ci', 'charset': 'utf8mb4', 'engine': 'InnoDB'}
-    result['alembic_version'] = {'columns': (('version_num', 'VARCHAR(32)', False, None, False, False),),
-        'pk': ('version_num',), 'indexes': (), 'unique': (), 'foreign': (), 'foreign_names': (),
+    result['alembic_version'] = {
+        'columns': (('version_num', 'VARCHAR(32)', False, None, False, False),),
+        'pk': ('version_num',), 'indexes': (), 'unique': (), 'checks': (), 'foreign_actions': (),
+        'foreign': (), 'foreign_names': (),
         'collation': 'utf8mb4_0900_ai_ci', 'charset': 'utf8mb4', 'engine': 'InnoDB'}
     return result
 
@@ -1370,3 +1378,101 @@ def test_fk_requires_native_dbapi_integrity_error(crud_double):
     with pytest.raises(m.MigrationSafetyError, match='^migration_constraint_wrong_error$'):
         run.verify_crud_and_snapshots()
     assert not run.cleanup_authorized
+
+
+@pytest.mark.parametrize('name,rules', [
+    ('chat_turns', [{'name': 'unknown_check', 'sqltext': 'turn_no >= 1'}]),
+    ('chat_turns', [{'name': 'ck_chat_turns_number', 'sqltext': 'turn_no >= 0'}]),
+    ('users', [{'name': 'ck_users_fake', 'sqltext': 'id >= 1'}]),
+])
+def test_chat_check_whitelist_rejects_unknown_rules(name, rules):
+    with pytest.raises(m.MigrationSafetyError, match='migration_unknown_check'):
+        m.verify_checks(name, rules)
+
+
+def test_chat_check_normalization_preserves_literal_semantics():
+    assert m.normalize_check("role IN ('us er','assistant','tool')") != m.normalize_check(
+        "role IN ('user','assistant','tool')")
+    assert m.normalize_check("status IN ('PENDING')") != m.normalize_check("status IN ('pending')")
+    rules = [{'name': key, 'sqltext': value} for key, value in m.CHECK_RULES['chat_turns'].items()]
+    assert m.verify_checks('chat_turns', rules)
+    reflected = [{'name': row['name'], 'sqltext': row['sqltext'].replace('IN', 'in').replace('AND', 'and')}
+                 for row in rules]
+    assert m.verify_checks('chat_turns', reflected) == m.verify_checks('chat_turns', rules)
+
+
+@pytest.mark.parametrize('table,alter', [
+    ('conversations', 'autoincrement'), ('chat_turns', 'autoincrement'),
+    ('chat_turns', 'cascade'), ('chat_messages', 'cascade'), ('chat_messages', 'check'),
+])
+def test_chat_schema_tampering_cannot_authorize_cleanup(catalog, table, alter):
+    run, data = catalog
+    if alter == 'autoincrement':
+        columns = list(data.schema[table]['columns'])
+        row = list(columns[0])
+        row[4] = not row[4]
+        columns[0] = tuple(row)
+        data.schema[table]['columns'] = tuple(columns)
+    elif alter == 'cascade':
+        data.schema[table]['foreign_actions'] = ((data.schema[table]['foreign_names'][0], 'RESTRICT'),)
+    else:
+        data.schema[table]['checks'] = ()
+    with pytest.raises(m.MigrationSafetyError):
+        run.authorize_cleanup()
+    assert not run.cleanup_authorized and data.drops == []
+
+
+def test_chat_cleanup_dependency_order(catalog):
+    _, data = catalog
+    order = m.cleanup_order(data.schema)
+    assert order.index('chat_messages') < order.index('chat_turns') < order.index('conversations')
+    assert order.index('conversations') < order.index('users')
+
+
+def test_chat_check_cannot_regroup_boolean_and_equality():
+    rows = [{'name': key, 'sqltext': value} for key, value in m.CHECK_RULES['chat_turns'].items()]
+    rows[0]['sqltext'] = ("(status IN ('pending','completed','failed','interrupted') AND length(status)) "
+                          "= length(trim(status))")
+    with pytest.raises(m.MigrationSafetyError, match='migration_unknown_check'):
+        m.verify_checks('chat_turns', rows)
+
+
+def test_direct_cli_defines_chat_crud_before_main(monkeypatch, capsys):
+    import runpy
+    import sys
+    path = str(m.ROOT / 'tests/mysql_migration_ci.py')
+    previous = sys.gettrace()
+    reached = []
+
+    def trace(frame, event, arg):
+        if event == 'call' and frame.f_code.co_filename == path and frame.f_code.co_name == 'main':
+            namespace = frame.f_globals
+            assert callable(namespace.get('verify_chat_crud'))
+            reached.append(True)
+            namespace['MigrationRun'].execute = lambda self: {'status': 'passed'}
+        return trace
+
+    monkeypatch.setattr(sys, 'argv', [path])
+    try:
+        sys.settrace(trace)
+        with pytest.raises(SystemExit) as exit_info:
+            runpy.run_path(path, run_name='__main__')
+    finally:
+        sys.settrace(previous)
+    assert exit_info.value.code == 0 and reached == [True]
+    assert json.loads(capsys.readouterr().out)['status'] == 'passed'
+
+
+@pytest.mark.parametrize('table,name', [
+    ('conversations', 'fk_conversations_user'),
+    ('chat_turns', 'fk_chat_turns_conversation'),
+    ('chat_messages', 'fk_chat_messages_turn'),
+])
+def test_named_chat_foreign_key_expectation_is_exact(catalog, table, name):
+    run, data = catalog
+    assert data.schema[table]['foreign_names'] == (name,)
+    data.schema[table]['foreign_names'] = ('unexpected_fk',)
+    data.schema[table]['foreign_actions'] = (('unexpected_fk', 'CASCADE' if table != 'conversations' else 'RESTRICT'),)
+    with pytest.raises(m.MigrationSafetyError):
+        run.authorize_cleanup()
+    assert not run.cleanup_authorized and data.drops == []

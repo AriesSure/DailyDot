@@ -1,6 +1,6 @@
 """Command admission for owned SQLite files, independent of the application factory.
 
-Only EMPTY, INITIAL and the pinned aligned HEAD schema are admitted. This module is inert on
+Only EMPTY, INITIAL, the frozen ALIGNED revision and the pinned conversation HEAD are admitted. This module is inert on
 import. The process-local guards are intended for a dedicated verifier process,
 not for concurrent application threads or hostile Python code in that process.
 """
@@ -25,7 +25,10 @@ from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
 REVISION = "df8b049a3e7e"
-HEAD_REVISION = "9a097b8e080b"
+ALIGNED_REVISION = "9a097b8e080b"
+HEAD_REVISION = "716951abf77d"
+CHAT_FILE = '716951abf77d_add_agent_conversations.py'
+CHAT_HASH = '3dcb81c1546d7c3ec34717a7c3124bdeb4794fc075635968a5a5b69dab5103d9'
 FORWARD_FILE = "9a097b8e080b_align_orm_schema_and_preserve_unknown_.py"
 FORWARD_HASH = "68983551b82cc3d288ef5a18e5be8a406c932e7fc013bae17aa32cd4ffd11028"
 INITIAL_HASH = "04a07055253abadbbc580b61052510c22344b635a0f8b8a26a1df02b08ae33f1"
@@ -66,6 +69,252 @@ _HEAD_INDEXES = {name: dict(indexes) for name, indexes in _INDEXES.items()}
 _HEAD_INDEXES["todos"]["ix_todos_event"] = (0, ("event",))
 _HEAD_INDEXES["cards"] = {"ix_cards_user_id": (0, ("user_id",))}
 _HEAD_FOREIGN = {**_FOREIGN, "cards": ("user_id", "users", "id")}
+
+_CHAT_COLUMNS = {
+    **_HEAD_COLUMNS,
+    **{
+        'chat_messages': [
+            (
+                'id',
+                'INTEGER',
+                1,
+            ),
+            (
+                'turn_id',
+                'INTEGER',
+                1,
+            ),
+            (
+                'position',
+                'INTEGER',
+                1,
+            ),
+            (
+                'role',
+                'VARCHAR(16)',
+                1,
+            ),
+            (
+                'content',
+                'TEXT',
+                0,
+            ),
+            (
+                'tool_calls',
+                'JSON',
+                0,
+            ),
+            (
+                'tool_call_id',
+                'VARCHAR(100)',
+                0,
+            ),
+            (
+                'tool_name',
+                'VARCHAR(64)',
+                0,
+            ),
+            (
+                'created_at',
+                'DATETIME',
+                1,
+            ),
+        ],
+        'chat_turns': [
+            (
+                'id',
+                'INTEGER',
+                1,
+            ),
+            (
+                'conversation_id',
+                'VARCHAR(32)',
+                1,
+            ),
+            (
+                'turn_no',
+                'INTEGER',
+                1,
+            ),
+            (
+                'client_request_id',
+                'VARCHAR(32)',
+                1,
+            ),
+            (
+                'request_digest',
+                'VARCHAR(64)',
+                1,
+            ),
+            (
+                'status',
+                'VARCHAR(16)',
+                1,
+            ),
+            (
+                'created_at',
+                'DATETIME',
+                1,
+            ),
+            (
+                'finished_at',
+                'DATETIME',
+                0,
+            ),
+            (
+                'error_code',
+                'VARCHAR(64)',
+                0,
+            ),
+        ],
+        'conversations': [
+            (
+                'id',
+                'VARCHAR(32)',
+                1,
+            ),
+            (
+                'user_id',
+                'INTEGER',
+                1,
+            ),
+            (
+                'title',
+                'VARCHAR(120)',
+                1,
+            ),
+            (
+                'created_at',
+                'DATETIME',
+                1,
+            ),
+            (
+                'updated_at',
+                'DATETIME',
+                1,
+            ),
+            (
+                'next_turn_no',
+                'INTEGER',
+                1,
+            ),
+            (
+                'active_request_id',
+                'VARCHAR(32)',
+                0,
+            ),
+            (
+                'active_started_at',
+                'DATETIME',
+                0,
+            ),
+            (
+                'archived_at',
+                'DATETIME',
+                0,
+            ),
+        ],
+    },
+}
+_CHAT_INDEXES = {
+    **_HEAD_INDEXES,
+    **{
+        'chat_messages': {
+            'ix_chat_messages_turn': (
+                0,
+                (
+                    'turn_id',
+                ),
+            ),
+        },
+        'chat_turns': {
+            'ix_chat_turns_conversation': (
+                0,
+                (
+                    'conversation_id',
+                ),
+            ),
+        },
+        'conversations': {
+            'ix_conversations_owner_updated': (
+                0,
+                (
+                    'user_id',
+                    'updated_at',
+                    'id',
+                ),
+            ),
+        },
+    },
+}
+_CHAT_UNIQUES = {
+    'chat_messages': [
+        (
+            'u',
+            (
+                1,
+                (
+                    'turn_id',
+                    'position',
+                ),
+            ),
+        ),
+    ],
+    'chat_turns': [
+        (
+            'u',
+            (
+                1,
+                (
+                    'conversation_id',
+                    'turn_no',
+                ),
+            ),
+        ),
+        (
+            'u',
+            (
+                1,
+                (
+                    'conversation_id',
+                    'client_request_id',
+                ),
+            ),
+        ),
+    ],
+    'conversations': [
+        (
+            'pk',
+            (
+                1,
+                (
+                    'id',
+                ),
+            ),
+        ),
+    ],
+}
+_CHAT_FOREIGN = {
+    **_HEAD_FOREIGN,
+    **{
+        'chat_messages': (
+            'turn_id',
+            'chat_turns',
+            'id',
+        ),
+        'chat_turns': (
+            'conversation_id',
+            'conversations',
+            'id',
+        ),
+        'conversations': (
+            'user_id',
+            'users',
+            'id',
+        ),
+    },
+}
+
 _OWNED = {}
 
 
@@ -379,10 +628,10 @@ def validate_initial_schema_signature(connection, objects):
     _validate_schema_signature(connection, objects, head=False)
 
 
-def _validate_schema_signature(connection, objects, *, head):
-    schema = _HEAD_COLUMNS if head else _COLUMNS
-    expected_indexes = _HEAD_INDEXES if head else _INDEXES
-    expected_foreign = _HEAD_FOREIGN if head else _FOREIGN
+def _validate_schema_signature(connection, objects, *, head, chat=False):
+    schema = _CHAT_COLUMNS if chat else (_HEAD_COLUMNS if head else _COLUMNS)
+    expected_indexes = _CHAT_INDEXES if chat else (_HEAD_INDEXES if head else _INDEXES)
+    expected_foreign = _CHAT_FOREIGN if chat else (_HEAD_FOREIGN if head else _FOREIGN)
     tables = {name: sql for kind, name, table, sql in objects if kind == "table"}
     _require(set(tables) == set(schema), "initial_tables_mismatch")
     expected_object_names = set(schema)
@@ -411,11 +660,27 @@ def _validate_schema_signature(connection, objects, *, head):
         constraints = definitions[len(expected) + 1:]
         accepted = {_canonical(f"CREATE TABLE {table} (" + ",".join(prefix + list(order)) + ")")
                     for order in permutations(constraints)}
-        _require(_canonical(tables[table]) in accepted, "initial_table_ddl_mismatch")
+        if chat and table in _CHAT_UNIQUES:
+            import runpy
+            frozen = runpy.run_path(str(ROOT / "migrations" / "versions" / CHAT_FILE))
+
+            def normalize(sql):
+                parts = re.findall(r"'(?:''|[^'])*'|[^']+", sql)
+                return ''.join(part if part.startswith("'") else re.sub(r'\s+|"', '', part)
+                               for part in parts)
+
+            accepted = {normalize(frozen['DDL']['sqlite'][table])}
+            _require(normalize(tables[table]) in accepted, "initial_table_ddl_mismatch")
+        else:
+            _require(_canonical(tables[table]) in accepted, "initial_table_ddl_mismatch")
         foreign = connection.execute('PRAGMA foreign_key_list("' + table + '")').fetchall()
         target_fk = expected_foreign.get(table)
+        action = 'NO ACTION'
+        if chat and table in _CHAT_UNIQUES:
+            action = 'RESTRICT' if table == 'conversations' else 'CASCADE'
         expected_fk = [] if target_fk is None else [
-            (target_fk[1], target_fk[0], target_fk[2], "NO ACTION", "NO ACTION", "NONE")
+            (target_fk[1], target_fk[0], target_fk[2], "NO ACTION",
+             action, "NONE")
         ]
         _require([(f[2], f[3], f[4], f[5], f[6], f[7]) for f in foreign] == expected_fk,
                  "initial_fk_mismatch")
@@ -439,7 +704,9 @@ def _validate_schema_signature(connection, objects, *, head):
             "alembic_version": [("pk", (1, ("version_num",)))],
             **({"cards": [("u", (1, ("date", "user_id")))]} if head else {}),
         }.get(table, [])
-        _require(auto == expected_auto, "initial_unique_mismatch")
+        if chat and table in _CHAT_UNIQUES:
+            expected_auto = _CHAT_UNIQUES[table]
+        _require(sorted(auto) == sorted(expected_auto), "initial_unique_mismatch")
     _require(all(kind in {"table", "index"} and name in expected_object_names
                  for kind, name, table, sql in objects), "unknown_schema_object")
 
@@ -448,8 +715,8 @@ def validate_initial_data_integrity(connection):
     _validate_data_integrity(connection, head=False)
 
 
-def _validate_data_integrity(connection, *, head):
-    schema = _HEAD_COLUMNS if head else _COLUMNS
+def _validate_data_integrity(connection, *, head, chat=False):
+    schema = _CHAT_COLUMNS if chat else (_HEAD_COLUMNS if head else _COLUMNS)
     _require(connection.execute("PRAGMA integrity_check").fetchall() == [("ok",)], "sqlite_integrity_failed")
     _require(not connection.execute("PRAGMA foreign_key_check").fetchall(), "foreign_key_orphans")
     for table, columns in schema.items():
@@ -476,11 +743,28 @@ def _validate_data_integrity(connection, *, head):
                             time.fromisoformat(value)
                         except ValueError:
                             raise MigrationValidationError("invalid_time_value") from None
+                    elif kind == "JSON":
+                        import json
+                        try:
+                            json.loads(value)
+                        except ValueError:
+                            raise MigrationValidationError("invalid_json_value") from None
                     elif kind == "DATETIME":
                         try:
                             datetime.fromisoformat(value)
                         except ValueError:
                             raise MigrationValidationError("invalid_initial_datetime") from None
+    if chat:
+        for table, column, values in (
+                ('chat_turns', 'status', "'pending','completed','failed','interrupted'"),
+                ('chat_messages', 'role', "'user','assistant','tool'")):
+            _require(connection.execute(f'SELECT 1 FROM {table} WHERE {column} NOT IN ({values}) LIMIT 1').fetchone()
+                     is None, "invalid_chat_enum")
+        for table, column, size in (('chat_turns', 'client_request_id', 32),
+                                    ('chat_turns', 'request_digest', 64)):
+            _require(connection.execute(
+                f"SELECT 1 FROM {table} WHERE length({column}) != {size} OR {column} GLOB '*[^0-9a-f]*' LIMIT 1"
+            ).fetchone() is None, "invalid_chat_identifier")
     unique_keys = [("records", "checkin_date,habit_id" if head else "datetime,habit_id"),
                    ("users", "username"), ("users", "email")]
     unique_keys.append(("cards", "date,user_id") if head else ("todos", "event"))
@@ -495,7 +779,8 @@ def _validate_revision_chain():
     versions = ROOT / "migrations" / "versions"
     expected = {
         "df8b049a3e7e_initial.py": (REVISION, None, INITIAL_HASH),
-        FORWARD_FILE: (HEAD_REVISION, REVISION, FORWARD_HASH),
+        FORWARD_FILE: (ALIGNED_REVISION, REVISION, FORWARD_HASH),
+        CHAT_FILE: (HEAD_REVISION, ALIGNED_REVISION, CHAT_HASH),
     }
     files = sorted(versions.glob("*.py"))
     _require({p.name for p in files} == set(expected), "revision_chain_not_approved")
@@ -523,17 +808,18 @@ def admit_migration_target(target):
             _require(any(kind == "table" and name == "alembic_version"
                          for kind, name, table, sql in objects), "version_table_missing")
             versions = connection.execute("SELECT version_num FROM alembic_version").fetchall()
-            _require(versions in ([(REVISION,)], [(HEAD_REVISION,)]), "initial_version_mismatch")
-            head = versions == [(HEAD_REVISION,)]
-            _validate_schema_signature(connection, objects, head=head)
-            _validate_data_integrity(connection, head=head)
-            state = "HEAD" if head else "INITIAL"
+            _require(versions in ([(REVISION,)], [(ALIGNED_REVISION,)], [(HEAD_REVISION,)]), "initial_version_mismatch")
+            head = versions != [(REVISION,)]
+            chat = versions == [(HEAD_REVISION,)]
+            _validate_schema_signature(connection, objects, head=head, chat=chat)
+            _validate_data_integrity(connection, head=head, chat=chat)
+            state = "HEAD" if chat else ("ALIGNED" if head else "INITIAL")
     owner["admitted"] = True
     return state
 
 
 def create_minimal_migration_app(target):
-    _require(admit_migration_target(target) in {"EMPTY", "INITIAL", "HEAD"}, "admission_required")
+    _require(admit_migration_target(target) in {"EMPTY", "INITIAL", "ALIGNED", "HEAD"}, "admission_required")
     owner = _OWNED[target]
     _require(owner["app"] is None and owner["boundary"] is not None, "minimal_app_already_created")
     from flask import Flask
@@ -552,8 +838,9 @@ def create_minimal_migration_app(target):
         owner["boundary"].creating_app = False
     owner["app"] = application
     migrate.init_app(application, db)
-    _require(set(db.metadata.tables) == {"users", "habits", "todos", "records", "cards"},
-             "model_metadata_incomplete")
+    expected_metadata = {'users', 'habits', 'todos', 'records', 'cards',
+                         'conversations', 'chat_turns', 'chat_messages'}
+    _require(set(db.metadata.tables) == expected_metadata, "model_metadata_incomplete")
     return application
 
 

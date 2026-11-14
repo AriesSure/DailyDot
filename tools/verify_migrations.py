@@ -6,7 +6,7 @@ from pathlib import Path
 if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from tools.migration_validation import verify_migrations
+from tools.migration_validation import HEAD_REVISION, verify_migrations
 
 
 def main():
@@ -18,7 +18,7 @@ def main():
     except Exception:
         print("migration_validation_failed")
         return 1
-    print("migration_validation_ok: empty -> 9a097b8e080b; repeated upgrade verified")
+    print(f"migration_validation_ok: empty -> {HEAD_REVISION}; repeated upgrade verified")
     return 0
 
 

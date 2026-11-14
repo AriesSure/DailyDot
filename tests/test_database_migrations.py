@@ -19,7 +19,7 @@ def config():
     return cfg
 
 def revision():
-    return ScriptDirectory.from_config(config()).get_revision(v.HEAD_REVISION).module
+    return ScriptDirectory.from_config(config()).get_revision(v.ALIGNED_REVISION).module
 
 def seed(c):
     c.executescript(
