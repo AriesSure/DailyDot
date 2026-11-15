@@ -243,3 +243,21 @@ def history(cid, *, completed_only=False, offset=0, limit=20):
                 ChatMessage.turn_id == turn.id).order_by(ChatMessage.position))]
             result.append(item)
         return result
+
+
+def recent_completed(cid, *, limit=7):
+    """Read a bounded tail, in chronological order, with owner verification."""
+    uid = identity()
+    require(type(limit) is int and 1 <= limit <= 7, 'chat_page_invalid')
+    with transaction() as session:
+        owned(session, uid, cid)
+        turns = session.scalars(sa.select(ChatTurn).where(
+            ChatTurn.conversation_id == cid, ChatTurn.status == 'completed'
+        ).order_by(ChatTurn.turn_no.desc()).limit(limit)).all()
+        result = []
+        for turn in reversed(turns):
+            item = snapshot(turn)
+            item['messages'] = [snapshot(m) for m in session.scalars(sa.select(ChatMessage).where(
+                ChatMessage.turn_id == turn.id).order_by(ChatMessage.position))]
+            result.append(item)
+        return result
