@@ -125,6 +125,19 @@ def chat_utcnow():
     return datetime.now(dt.timezone.utc).replace(tzinfo=None)
 
 
+class AgentAdmissionGate(db.Model):
+    __tablename__ = 'agent_admission_gate'
+    __table_args__ = (
+        sa.PrimaryKeyConstraint('gate_key', name='pk_agent_admission_gate'),
+        sa.CheckConstraint("gate_key = 'global' AND length(gate_key) = 6", name='ck_agent_gate_key'),
+        sa.CheckConstraint('lock_version >= 0', name='ck_agent_gate_version'),
+        {'mysql_engine': 'InnoDB'},
+    )
+    gate_key: so.Mapped[str] = so.mapped_column(
+        sa.String(16, collation='utf8mb4_bin').with_variant(sa.String(16, collation='BINARY'), 'sqlite'))
+    lock_version: so.Mapped[int] = so.mapped_column(sa.BigInteger, nullable=False, default=0)
+
+
 class ChatUTCDateTime(sa.TypeDecorator):
     impl = sa.DateTime
     cache_ok = True

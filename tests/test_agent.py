@@ -4,7 +4,7 @@ from types import SimpleNamespace
 import json
 import pytest
 from flask_login import login_user
-from app.models import User, Habit, Record
+from app.models import AgentAdmissionGate, User, Habit, Record
 from app.agent import service
 from app.agent.tools import AgentError
 
@@ -21,6 +21,7 @@ def final(text='完成查询'):
 def logged(app, db):
     a = User(username='agent-a', email='a@example.invalid')
     b = User(username='agent-b', email='b@example.invalid')
+    db.session.add(AgentAdmissionGate(gate_key='global', lock_version=0))
     db.session.add_all([a, b])
     db.session.flush()
     h = Habit(user_id=a.id, habit_name='<img onerror=attack()>', icon='book')

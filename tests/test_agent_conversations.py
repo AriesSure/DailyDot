@@ -7,7 +7,7 @@ from flask_login import login_user
 
 from app.agent import conversations as c, dialogue, service
 from app.agent.tools import AgentError
-from app.models import User, Habit
+from app.models import AgentAdmissionGate, User, Habit
 from tests.test_agent import call, final, scripted
 
 
@@ -15,6 +15,7 @@ from tests.test_agent import call, final, scripted
 def logged(app, db):
     a, b = User(username='dialogue-a', email='da@example.invalid'), User(
         username='dialogue-b', email='db@example.invalid')
+    db.session.add(AgentAdmissionGate(gate_key='global', lock_version=0))
     db.session.add_all([a, b])
     db.session.flush()
     db.session.add_all([Habit(user_id=a.id, habit_name='READ-A', icon='book'),
@@ -53,7 +54,7 @@ def test_duplicate_no_model_and_busy(logged):
     def model(*args):
         pytest.fail('duplicate/busy must not execute model')
     assert dialogue.send_message(cid, rid, 'question', model=model)['duplicate']
-    assert dialogue.send_message(cid, uuid4().hex, 'other', model=model)['error_code'] == 'chat_busy'
+    assert dialogue.send_message(cid, uuid4().hex, 'other', model=model)['error_code'] == 'agent_user_busy'
     assert dialogue.send_message(cid, rid, 'changed', model=model)['error_code'] == 'chat_request_conflict'
 
 
@@ -133,7 +134,16 @@ def test_real_collector_overflow_fails_without_pending_leak(logged, monkeypatch)
     assert len([m for m in row['messages'] if m['role'] == 'tool']) < 5
 
 
-def test_truncated_context_current_question_and_time_rules(logged):
+def test_truncated_context_current_question_and_time_rules(logged, monkeypatch):
+    from datetime import datetime, timezone, timedelta
+    from app.agent import admission
+    tick = [datetime.now(timezone.utc) + timedelta(seconds=1)]
+
+    def database_time(session):
+        tick[0] += timedelta(seconds=61)
+        return tick[0]
+
+    monkeypatch.setattr(admission, 'database_utc', database_time)
     cid = c.create_conversation()['id']
     for i in range(8):
         assert dialogue.send_message(cid, uuid4().hex, f'old-{i}', model=scripted([final()], []))['ok']
@@ -220,7 +230,7 @@ def test_mapped_history_id_still_protected_from_current_collision(logged):
 def test_begin_persistence_failure_is_unresolved_without_compensation(logged, monkeypatch, committed):
     from unittest.mock import Mock
     cid, rid = c.create_conversation()['id'], uuid4().hex
-    original = c.begin_turn
+    original = c.begin_admitted_turn
 
     def uncertain_begin(actual_cid, actual_rid, question):
         if committed:
@@ -229,7 +239,7 @@ def test_begin_persistence_failure_is_unresolved_without_compensation(logged, mo
 
     begin = Mock(side_effect=uncertain_begin)
     finish, model = Mock(), Mock()
-    monkeypatch.setattr(c, 'begin_turn', begin)
+    monkeypatch.setattr(c, 'begin_admitted_turn', begin)
     monkeypatch.setattr(c, 'finish_turn', finish)
     result = dialogue.send_message(cid, rid, 'question', model=model)
     assert result['ok'] is False
@@ -253,7 +263,7 @@ def test_pre_begin_validation_failure_needs_no_recovery(logged, monkeypatch, que
     from unittest.mock import Mock
     cid, rid = c.create_conversation()['id'], uuid4().hex
     begin, finish, model = Mock(), Mock(), Mock()
-    monkeypatch.setattr(c, 'begin_turn', begin)
+    monkeypatch.setattr(c, 'begin_admitted_turn', begin)
     monkeypatch.setattr(c, 'finish_turn', finish)
     result = dialogue.send_message(cid, rid, question, model=model)
     assert result['ok'] is False and result['error_code'] == 'chat_content_invalid'

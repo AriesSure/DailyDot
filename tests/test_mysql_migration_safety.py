@@ -250,7 +250,8 @@ def expected_schema(metadata):
             if isinstance(c, sa.CheckConstraint)]),
             'foreign_actions': tuple(sorted((c.name, c.ondelete or 'RESTRICT')
                                             for c in table.foreign_key_constraints)),
-            'columns': tuple(columns), 'pk': ('id',), 'indexes': tuple(sorted(indexes)),
+            'columns': tuple(columns), 'pk': tuple(c.name for c in table.primary_key),
+            'indexes': tuple(sorted(indexes)),
             'unique': tuple(sorted((name, cols) for name, unique, cols in indexes if unique)),
             'foreign': tuple(sorted((tuple(f.parent.name for f in c.elements), c.elements[0].column.table.name,
                                     tuple(f.column.name for f in c.elements)) for c in table.foreign_key_constraints)),
@@ -285,6 +286,7 @@ def catalog(monkeypatch):
     catalog.real_inspect_server = mysql_ci.inspect_server
     catalog.data = {name: () for name in m.TABLES}
     catalog.data['alembic_version'] = ((m.HEAD,),)
+    catalog.data['agent_admission_gate'] = (('global', 0),)
 
     class Engine:
         closed = invalidated = False
@@ -328,6 +330,7 @@ def catalog(monkeypatch):
     run.db = db
     run.boundary = SimpleNamespace(engine=Engine(), check=Mock(return_value=None), attempts=0)
     run.collation = 'utf8mb4_0900_ai_ci'
+    run.admission_verified = True
     run.verified_schema, run.verified_data = deepcopy(catalog.schema), deepcopy(catalog.data)
     def inspect(source, require_empty=False):
         catalog.inspections.append(source)
@@ -505,6 +508,7 @@ def test_success_protocol_accepts_only_bounded_verified_facts():
     payload = {'status': 'passed', 'stage': 'complete', 'substage': None, 'state': 'DISPOSED', 'error_code': None,
                'exception_type': None, 'mysql_errno': None,
                'facts': {'server_version': '8.0.46', 'charset': 'utf8mb4', 'collation': 'utf8mb4_0900_ai_ci',
+                         'admission': dict.fromkeys(m.ADMISSION_FACTS, True),
                          'foreign_keys': True, 'autocommit': False, 'database': 'dailydot_test',
                          'account': 'dailydot_test@%',
                          'tables': {name: {'charset': 'utf8mb4', 'collation': 'utf8mb4_0900_ai_ci'} for name in m.TABLES},
@@ -1427,6 +1431,35 @@ def test_chat_cleanup_dependency_order(catalog):
     order = m.cleanup_order(data.schema)
     assert order.index('chat_messages') < order.index('chat_turns') < order.index('conversations')
     assert order.index('conversations') < order.index('users')
+    assert order.index('users') < order.index('agent_admission_gate') < order.index('alembic_version')
+
+
+def test_missing_admission_proof_never_authorizes_cleanup(catalog):
+    run, data = catalog
+    run.admission_verified = False
+    with pytest.raises(m.MigrationSafetyError, match='migration_admission_not_verified'):
+        run.authorize_cleanup()
+    assert not run.cleanup_authorized and data.drops == []
+
+
+@pytest.mark.parametrize('change', ['pk', 'auto', 'check'])
+def test_gate_schema_is_exact_not_a_generic_string_pk_exception(catalog, change):
+    from app.extensions import db
+    _, data = catalog
+    schema = deepcopy(data.schema)
+    gate = schema['agent_admission_gate']
+    if change == 'pk':
+        gate['pk'] = ('lock_version',)
+    elif change == 'auto':
+        columns = list(gate['columns'])
+        row = list(columns[0])
+        row[4] = True
+        columns[0] = tuple(row)
+        gate['columns'] = tuple(columns)
+    else:
+        gate['checks'] = ()
+    with pytest.raises(m.MigrationSafetyError):
+        m.verify_head(schema, db.metadata, data.schema['users']['collation'])
 
 
 def test_chat_check_cannot_regroup_boolean_and_equality():

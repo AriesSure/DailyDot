@@ -101,36 +101,61 @@ def get_request(cid, rid):
 
 
 def begin_turn(cid, rid, content):
+    """Compatibility persistence entry; not an authorization to execute a model."""
+    return _begin_turn(cid, rid, content, admitted=False)
+
+
+def begin_admitted_turn(cid, rid, content):
+    return _begin_turn(cid, rid, content, admitted=True)
+
+
+def _begin_turn(cid, rid, content, *, admitted):
     uid = identity()
     request_id(rid)
     content = normalize(content)
     check_message_budget([{'role': 'user', 'content': content}])
     digest = hashlib.sha256(content.encode('utf-8')).hexdigest()
     with transaction() as session:
-        # Conditional UPDATE is the first statement: acquire the write/row lock
-        # before reading request state (also avoids stale MySQL snapshot races).
-        claimed = session.execute(sa.update(Conversation).where(
-            Conversation.id == cid, Conversation.user_id == uid,
-            Conversation.active_request_id.is_(None), Conversation.archived_at.is_(None)
-        ).values(active_request_id=rid, active_started_at=chat_utcnow()))
-        convo = owned(session, uid, cid)
-        existing = session.scalar(sa.select(ChatTurn).where(
+        return _begin_with_session(session, uid, cid, rid, content, digest, admitted=admitted)
+
+
+def _begin_with_session(session, uid, cid, rid, content, digest, *, admitted):
+    """Session-aware core; caller owns transaction and trusted identity."""
+    now = chat_utcnow()
+    if admitted:
+        from app.agent import admission
+        admission.acquire(session)
+        owned(session, uid, cid)
+        previous = session.scalar(sa.select(ChatTurn).where(
             ChatTurn.conversation_id == cid, ChatTurn.client_request_id == rid))
-        if existing:
-            require(existing.request_digest == digest, 'chat_request_conflict')
-            if claimed.rowcount == 1:
-                convo.active_request_id = None
-                convo.active_started_at = None
-            return {'created': False, 'turn': snapshot(existing)}
-        require(claimed.rowcount == 1, 'chat_busy')
-        row = ChatTurn(conversation_id=cid, turn_no=convo.next_turn_no,
-                       client_request_id=rid, request_digest=digest)
-        convo.next_turn_no += 1
-        convo.updated_at = chat_utcnow()
-        session.add(row)
-        session.flush()
-        session.add(ChatMessage(turn_id=row.id, position=0, role='user', content=content))
-        return {'created': True, 'turn': snapshot(row)}
+        if previous:
+            require(previous.request_digest == digest, 'chat_request_conflict')
+            return {'created': False, 'turn': snapshot(previous)}
+        now = admission.check(session, uid)
+    # Conditional UPDATE is the first statement: acquire the write/row lock
+    # before reading request state (also avoids stale MySQL snapshot races).
+    claimed = session.execute(sa.update(Conversation).where(
+        Conversation.id == cid, Conversation.user_id == uid,
+        Conversation.active_request_id.is_(None), Conversation.archived_at.is_(None)
+    ).values(active_request_id=rid, active_started_at=now))
+    convo = owned(session, uid, cid)
+    existing = session.scalar(sa.select(ChatTurn).where(
+        ChatTurn.conversation_id == cid, ChatTurn.client_request_id == rid))
+    if existing:
+        require(existing.request_digest == digest, 'chat_request_conflict')
+        if claimed.rowcount == 1:
+            convo.active_request_id = None
+            convo.active_started_at = None
+        return {'created': False, 'turn': snapshot(existing)}
+    require(claimed.rowcount == 1, 'chat_busy')
+    row = ChatTurn(conversation_id=cid, turn_no=convo.next_turn_no,
+                   client_request_id=rid, request_digest=digest, created_at=now)
+    convo.next_turn_no += 1
+    convo.updated_at = now
+    session.add(row)
+    session.flush()
+    session.add(ChatMessage(turn_id=row.id, position=0, role='user', content=content, created_at=now))
+    return {'created': True, 'turn': snapshot(row)}
 
 
 def check_message_budget(messages):
@@ -261,3 +286,51 @@ def recent_completed(cid, *, limit=7):
                 ChatMessage.turn_id == turn.id).order_by(ChatMessage.position))]
             result.append(item)
         return result
+
+
+def get_request_result(cid, rid):
+    """Owner-checked, read-only public DTO. No model execution or state recovery."""
+    from datetime import timezone
+    uid = identity()
+    request_id(rid)
+    with transaction() as session:
+        try:
+            owned(session, uid, cid)
+            turn = session.scalar(sa.select(ChatTurn).where(
+                ChatTurn.conversation_id == cid, ChatTurn.client_request_id == rid))
+        except ConversationError:
+            raise
+        except (ValueError, TypeError):
+            raise ConversationError('chat_result_unavailable') from None
+        require(turn is not None, 'chat_not_found')
+        answer, failure = None, None
+        if turn.status == 'completed':
+            try:
+                rows = session.scalars(sa.select(ChatMessage).where(
+                    ChatMessage.turn_id == turn.id).order_by(ChatMessage.position).limit(33)).all()
+                require(bool(rows) and rows[0].role == 'user' and type(rows[0].content) is str
+                        and bool(rows[0].content.strip()), 'chat_result_unavailable')
+                require([m.position for m in rows] == list(range(len(rows))), 'chat_result_unavailable')
+                require(not any((rows[0].tool_calls, rows[0].tool_call_id, rows[0].tool_name)),
+                        'chat_result_unavailable')
+                messages = [{key: getattr(row, key) for key in (
+                    'role', 'content', 'tool_calls', 'tool_call_id', 'tool_name')} for row in rows]
+                validated_messages(messages[1:], True)
+                check_message_budget(messages)
+                answer = rows[-1].content
+            except (ValueError, TypeError, KeyError):
+                raise ConversationError('chat_result_unavailable') from None
+        elif turn.status in ('failed', 'interrupted'):
+            allowed = {'chat_execution_failed', 'chat_execution_interrupted'}
+            fallback = 'chat_execution_interrupted' if turn.status == 'interrupted' else 'chat_execution_failed'
+            failure = {'code': turn.error_code if turn.error_code in allowed else fallback,
+                       'message': '执行已中断。' if turn.status == 'interrupted' else '本轮未能完成。'}
+        else:
+            require(turn.status == 'pending', 'chat_result_unavailable')
+
+        def utc(value):
+            return value.astimezone(timezone.utc).isoformat().replace('+00:00', 'Z') if value else None
+
+        return {'conversation_id': cid, 'request_id': rid, 'turn_no': turn.turn_no, 'status': turn.status,
+                'answer': answer, 'failure': failure, 'created_at': utc(turn.created_at),
+                'completed_at': utc(turn.finished_at), 'history_truncated': None}

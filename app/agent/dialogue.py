@@ -16,7 +16,7 @@ def send_message(cid, rid, question, *, model=None):
         # trace refer to exactly the same question. Keep the existing Agent limit.
         question = c.normalize(question)
         c.require(len(question) <= 2000, 'chat_content_invalid')
-        begun = c.begin_turn(cid, rid, question)
+        begun = c.begin_admitted_turn(cid, rid, question)
         if not begun['created']:
             return {'ok': begun['turn']['status'] == 'completed', 'duplicate': True,
                     'turn': begun['turn'], 'answer': None, 'error_code': None}
@@ -34,7 +34,9 @@ def send_message(cid, rid, question, *, model=None):
         if isinstance(exc, c.ConversationError):
             allowed = {'chat_not_found', 'chat_busy', 'chat_request_conflict', 'chat_request_invalid',
                        'chat_authentication_required', 'chat_content_invalid', 'chat_ownership_lost',
-                       'chat_persistence_failed', 'chat_protocol_invalid', 'chat_protocol_incomplete'}
+                       'chat_persistence_failed', 'chat_protocol_invalid', 'chat_protocol_incomplete',
+                       'agent_user_busy', 'agent_global_capacity', 'agent_rate_limited',
+                       'agent_admission_unavailable'}
             if exc.args and type(exc.args[0]) is str and exc.args[0] in allowed:
                 code = exc.args[0]
         recovery = 'not_needed'
@@ -52,4 +54,7 @@ def send_message(cid, rid, question, *, model=None):
                 recovery = 'state_unresolved'
         elif started:
             recovery = 'state_unresolved'
-        return {'ok': False, 'answer': None, 'error_code': code, 'recovery': recovery}
+        result = {'ok': False, 'answer': None, 'error_code': code, 'recovery': recovery}
+        if code == 'agent_rate_limited' and type(getattr(exc, 'retry_after_seconds', None)) is int:
+            result['retry_after_seconds'] = exc.retry_after_seconds
+        return result

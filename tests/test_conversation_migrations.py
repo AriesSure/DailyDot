@@ -45,7 +45,7 @@ with v.create_temporary_sqlite_target() as t, v.SQLiteBoundary(t):
     with sqlite3.connect(str(t.path)) as c:
         assert tuple(c.iterdump())==snapshot
     from alembic.script import ScriptDirectory
-    migration=ScriptDirectory.from_config(config()).get_revision(v.HEAD_REVISION).module
+    migration=ScriptDirectory.from_config(config()).get_revision(v.CHAT_REVISION).module
     with patch.object(migration.op,'get_bind',side_effect=AssertionError('no DDL')) as bind:
         try: migration.downgrade()
         except RuntimeError as error:
@@ -85,7 +85,7 @@ def test_new_mysql_ddl_compiles_without_mysql_connection():
     child(FLOW + """
 import io
 output=io.StringIO()
-migration=ScriptDirectory.from_config(config()).get_revision(v.HEAD_REVISION).module
+migration=ScriptDirectory.from_config(config()).get_revision(v.CHAT_REVISION).module
 with Operations.context(MigrationContext.configure(dialect_name='mysql',
     opts={'as_sql':True,'literal_binds':True,'output_buffer':output})):
     with patch.object(migration,'validate_previous_schema'):
@@ -112,7 +112,7 @@ with v.create_temporary_sqlite_target() as t, v.SQLiteBoundary(t):
     with sqlite3.connect(str(t.path)) as c:
         c.execute({sql!r});c.commit()
         before=tuple(c.iterdump())
-    migration=ScriptDirectory.from_config(config()).get_revision(v.HEAD_REVISION).module
+    migration=ScriptDirectory.from_config(config()).get_revision(v.CHAT_REVISION).module
     with app.app_context(), db.engine.connect() as connection:
         with Operations.context(MigrationContext.configure(connection)):
             with patch.object(migration.op,'execute',wraps=migration.op.execute) as ddl:

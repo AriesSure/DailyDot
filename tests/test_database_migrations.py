@@ -71,7 +71,8 @@ with v.create_temporary_sqlite_target() as t:
                     assert getattr(actual['type'],'length',None)==getattr(expected.type,'length',None)
                     assert actual['nullable']==expected.nullable
                     assert actual['default'] is None and expected.server_default is None
-                assert inspector.get_pk_constraint(table.name)['constrained_columns']==['id']
+                assert inspector.get_pk_constraint(table.name)['constrained_columns'] == (
+                    ['gate_key'] if table.name == 'agent_admission_gate' else ['id'])
             assert db.session.get(Record,21).checkin_time is None
             assert not db.session.get(Todo,31).completed
             db.session.remove()

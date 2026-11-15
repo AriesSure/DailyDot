@@ -32,9 +32,9 @@ from sqlalchemy.dialects import mysql
 ROOT = Path(__file__).resolve().parents[1]
 INITIAL = 'df8b049a3e7e'
 ALIGNED = '9a097b8e080b'
-HEAD = '716951abf77d'
+HEAD = '4f8879db2fc9'
 TABLES = frozenset({'users', 'habits', 'todos', 'records', 'cards', 'alembic_version',
-                    'conversations', 'chat_turns', 'chat_messages'})
+                    'conversations', 'chat_turns', 'chat_messages', 'agent_admission_gate'})
 STATES = ('UNAUTHORIZED', 'TARGET_VALIDATED', 'EMPTY_OWNED', 'INITIAL_VERIFIED',
           'HEAD_VERIFIED', 'DATA_AND_DOWNGRADE_VERIFIED', 'CLEANUP_AUTHORIZED',
           'EMPTY_VERIFIED', 'DISPOSED')
@@ -45,7 +45,7 @@ CHAT_SUBSTAGES = ('chat_insert_conversation', 'chat_insert_turn', 'chat_insert_m
                   'chat_unique', 'chat_foreign_key', 'chat_role_check', 'chat_status_check',
                   'chat_update', 'chat_delete')
 CRUD_SUBSTAGES = CHAT_SUBSTAGES + (
-    'chat_crud', 'insert_defaults_commit', 'verify_defaults', 'update_commit', 'verify_update',
+    'chat_crud', 'admission_concurrency', 'insert_defaults_commit', 'verify_defaults', 'update_commit', 'verify_update',
                  'rollback_probe', 'record_unique', 'card_unique', 'card_foreign_key',
                  'todo_duplicate', 'card_delete', 'card_survivor', 'session_remove',
                  'schema_snapshot', 'data_snapshot')
@@ -70,7 +70,11 @@ GENERAL_ERROR_CODES = ('mysql_forward_migration_failed', 'forward_migration_pref
 EXCEPTION_TYPES = ('MigrationSafetyError', 'RuntimeError', 'OperationalError', 'IntegrityError',
                    'DBAPIError', 'ProgrammingError', 'CommandError', 'TimeoutError', 'AssertionError', 'OtherError')
 
+ADMISSION_FACTS = ('same_user', 'global_slot', 'duplicate', 'rate', 'rollback',
+                   'gate_released', 'independent_connections')
 CHECK_RULES = {
+    'agent_admission_gate': {'ck_agent_gate_key': "gate_key = 'global' AND length(gate_key) = 6",
+                             'ck_agent_gate_version': 'lock_version >= 0'},
     'conversations': {'ck_conversations_next_turn': 'next_turn_no >= 1'},
     'chat_turns': {
         'ck_chat_turns_status': (
@@ -132,8 +136,10 @@ def verify_checks(name, rows):
 
 
 DROP_SQL = MappingProxyType({name: 'DROP TABLE `' + name + '`' for name in TABLES})
-SELECT_SQL = MappingProxyType({name: 'SELECT * FROM `' + name + '` ORDER BY ' +
-              ('version_num' if name == 'alembic_version' else 'id') for name in TABLES})
+SELECT_SQL = MappingProxyType({
+    name: 'SELECT * FROM `' + name + '` ORDER BY ' +
+    ('version_num' if name == 'alembic_version' else ('gate_key' if name == 'agent_admission_gate' else 'id'))
+    for name in TABLES})
 SYSTEM_ENV = ('SYSTEMROOT', 'WINDIR', 'PATH', 'TEMP', 'TMP', 'LANG', 'LC_ALL')
 CI_ENV = ('GITHUB_ACTIONS', 'TEST_DATABASE_PROFILE', 'TEST_DATABASE_ALLOW_MYSQL', 'TEST_DATABASE_URL')
 _physical = ContextVar('mysql_migration_physical', default=None)
@@ -485,8 +491,11 @@ def verify_head(schema, metadata, collation):
             _, kind, nullable, default, autoincrement, generated = columns[expected.name]
             expected_kind = str(expected.type.compile(dialect=mysql.dialect()))
             allowed = {'TINYINT(1)', 'BOOLEAN', 'BOOL'} if isinstance(expected.type, sa.Boolean) else {expected_kind}
-            if (name, expected.name) in {('chat_turns', 'status'), ('chat_messages', 'role')}:
+            if (name, expected.name) in {('chat_turns', 'status'), ('chat_messages', 'role'),
+                                         ('agent_admission_gate', 'gate_key')}:
                 allowed.add('VARCHAR(16) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin')
+            if expected_kind == 'BIGINT':
+                allowed.add('BIGINT(20)')
             if expected_kind == 'INTEGER':
                 allowed.add('INTEGER(11)')
             require(kind in allowed and nullable == expected.nullable and default is None
@@ -500,6 +509,9 @@ def verify_head(schema, metadata, collation):
         if name == 'conversations':
             require(isinstance(table.c.id.type, sa.String) and table.c.id.type.length == 32,
                     'migration_head_column_mismatch')
+        if name == 'agent_admission_gate':
+            require(isinstance(table.c.gate_key.type, sa.String) and table.c.gate_key.type.length == 16,
+                    'migration_head_column_mismatch')
         expected_actions = tuple(sorted((c.name, c.ondelete or 'RESTRICT') for c in table.foreign_key_constraints))
         if name in CHECK_RULES:
             require(actual['foreign_actions'] == expected_actions, 'migration_foreign_options')
@@ -510,7 +522,8 @@ def verify_head(schema, metadata, collation):
         unique_indexes = {(name, cols) for name, unique, cols in indexes if unique}
         foreign = {(tuple(f.parent.name for f in c.elements), c.elements[0].column.table.name,
                     tuple(f.column.name for f in c.elements)) for c in table.foreign_key_constraints}
-        require(actual['pk'] == ('id',) and set(actual['indexes']) == indexes
+        require(actual['pk'] == (('gate_key',) if name == 'agent_admission_gate' else ('id',))
+                and set(actual['indexes']) == indexes
                 and set(actual['unique']) == unique_indexes and set(actual['foreign']) == foreign
                 and len(actual['foreign']) == len(foreign)
                 and len(actual['foreign_names']) == len(foreign)
@@ -529,7 +542,11 @@ def verify_head(schema, metadata, collation):
 
 def data_snapshot(engine):
     with engine.connect() as connection:
-        return {name: tuple(connection.execute(sa.text(SELECT_SQL[name])).all()) for name in sorted(TABLES)}
+        result = {name: tuple(connection.execute(sa.text(SELECT_SQL[name])).all()) for name in sorted(TABLES)}
+        gate = result['agent_admission_gate']
+        require(len(gate) == 1 and gate[0][0] == 'global' and type(gate[0][1]) is int and gate[0][1] >= 0,
+                'migration_gate_seed_invalid')
+        return result
 
 
 def cleanup_order(schema):
@@ -539,7 +556,7 @@ def cleanup_order(schema):
     order = []
     # Stable candidates only; dependency edges determine which can be removed.
     priority = ('records', 'todos', 'cards', 'habits', 'chat_messages', 'chat_turns',
-                'conversations', 'users', 'alembic_version')
+                'conversations', 'users', 'agent_admission_gate', 'alembic_version')
     while graph:
         leaves = [name for name in priority if name in graph
                   and not any(name in parents for child, parents in graph.items() if child != name)]
@@ -553,6 +570,7 @@ def cleanup_order(schema):
 class MigrationRun:
     def __init__(self):
         self.state = STATES[0]
+        self.admission_verified = False
         self.stage = 'admission'
         self.substage = None
         self.cleanup_authorized = False
@@ -672,6 +690,7 @@ class MigrationRun:
             raise MigrationSafetyError('migration_server_identity_changed') from None
 
     def recheck_complete(self):
+        require(self.admission_verified, 'migration_admission_not_verified')
         self.verify_server_identity(self.boundary.engine)
         schema = schema_snapshot(self.boundary.engine)
         verify_head(schema, self.db.metadata, self.collation)
@@ -828,6 +847,15 @@ class MigrationRun:
                     self.stage = 'crud'
                     self.substage = 'chat_crud'
                     verify_chat_crud(self.db, self)
+                    self.substage = 'admission_concurrency'
+                    from tests.agent_admission_cases import verify_concurrency
+                    proof = verify_concurrency(
+                        self.boundary.app, engine,
+                        verify_connection=lambda connection: self.verify_server_identity(engine, connection=connection))
+                    require(set(proof) == set(ADMISSION_FACTS) and all(v is True for v in proof.values()),
+                            'migration_admission_not_verified')
+                    self.facts['admission'] = proof
+                    self.admission_verified = True
                     self.verify_crud_and_snapshots()
                     self.substage = None
                     self.stage = 'repeat'
@@ -997,11 +1025,13 @@ def validate_result(value):
         require(value['stage'] == 'complete' and value['state'] == 'DISPOSED'
                 and value['substage'] is value['error_code'] is value['exception_type'] is value['mysql_errno'] is None
                 and set(facts) == {'server_version', 'charset', 'collation', 'foreign_keys', 'autocommit',
-                                   'database', 'account', 'tables', 'types'}
+                                   'database', 'account', 'tables', 'types', 'admission'}
                 and isinstance(facts['server_version'], str)
                 and re.fullmatch(r'8\.0\.\d{1,3}', facts['server_version'])
                 and facts['charset'] == 'utf8mb4' and isinstance(facts['collation'], str)
                 and re.fullmatch(r'utf8mb4_[a-z0-9_]+', facts['collation'])
+                and type(facts['admission']) is dict and set(facts['admission']) == set(ADMISSION_FACTS)
+                and all(value is True for value in facts['admission'].values())
                 and facts['foreign_keys'] is True and type(facts['autocommit']) is bool
                 and facts['database'] == 'dailydot_test' and facts['account'] == 'dailydot_test@%'
                 and isinstance(facts['tables'], dict) and set(facts['tables']) == TABLES

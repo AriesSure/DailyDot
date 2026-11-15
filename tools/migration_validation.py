@@ -1,6 +1,6 @@
 """Command admission for owned SQLite files, independent of the application factory.
 
-Only EMPTY, INITIAL, the frozen ALIGNED revision and the pinned conversation HEAD are admitted. This module is inert on
+Only EMPTY, INITIAL, ALIGNED, CHAT and the pinned admission HEAD are admitted. This module is inert on
 import. The process-local guards are intended for a dedicated verifier process,
 not for concurrent application threads or hostile Python code in that process.
 """
@@ -26,7 +26,10 @@ from unittest.mock import patch
 ROOT = Path(__file__).resolve().parents[1]
 REVISION = "df8b049a3e7e"
 ALIGNED_REVISION = "9a097b8e080b"
-HEAD_REVISION = "716951abf77d"
+CHAT_REVISION = "716951abf77d"
+HEAD_REVISION = "4f8879db2fc9"
+GATE_FILE = "4f8879db2fc9_add_agent_admission_gate.py"
+GATE_HASH = "a66551e75f155900870df2f7628dc29df3ca1a2a7a5701a9624bb58a17df1ebd"
 CHAT_FILE = '716951abf77d_add_agent_conversations.py'
 CHAT_HASH = '3dcb81c1546d7c3ec34717a7c3124bdeb4794fc075635968a5a5b69dab5103d9'
 FORWARD_FILE = "9a097b8e080b_align_orm_schema_and_preserve_unknown_.py"
@@ -628,9 +631,13 @@ def validate_initial_schema_signature(connection, objects):
     _validate_schema_signature(connection, objects, head=False)
 
 
-def _validate_schema_signature(connection, objects, *, head, chat=False):
+def _validate_schema_signature(connection, objects, *, head, chat=False, gate=False):
     schema = _CHAT_COLUMNS if chat else (_HEAD_COLUMNS if head else _COLUMNS)
+    if gate:
+        schema = {**schema, 'agent_admission_gate': [('gate_key', 'VARCHAR(16)', 1), ('lock_version', 'BIGINT', 1)]}
     expected_indexes = _CHAT_INDEXES if chat else (_HEAD_INDEXES if head else _INDEXES)
+    if gate:
+        expected_indexes = {**expected_indexes, 'agent_admission_gate': {}}
     expected_foreign = _CHAT_FOREIGN if chat else (_HEAD_FOREIGN if head else _FOREIGN)
     tables = {name: sql for kind, name, table, sql in objects if kind == "table"}
     _require(set(tables) == set(schema), "initial_tables_mismatch")
@@ -638,6 +645,8 @@ def _validate_schema_signature(connection, objects, *, head, chat=False):
     for table, expected in schema.items():
         columns = connection.execute('PRAGMA table_xinfo("' + table + '")').fetchall()
         expected_pk = "version_num" if table == "alembic_version" else "id"
+        if table == 'agent_admission_gate':
+            expected_pk = 'gate_key'
         actual = [(c[1], c[2].replace(" ", "").upper(), c[3]) for c in columns]
         _require(actual == expected and all(c[4] is None and c[6] == 0 for c in columns),
                  "initial_columns_mismatch")
@@ -660,7 +669,12 @@ def _validate_schema_signature(connection, objects, *, head, chat=False):
         constraints = definitions[len(expected) + 1:]
         accepted = {_canonical(f"CREATE TABLE {table} (" + ",".join(prefix + list(order)) + ")")
                     for order in permutations(constraints)}
-        if chat and table in _CHAT_UNIQUES:
+        if gate and table == 'agent_admission_gate':
+            import runpy
+            frozen = runpy.run_path(str(ROOT / 'migrations' / 'versions' / GATE_FILE))
+            _require(_canonical(tables[table]) == _canonical(frozen['GATE_DDL']['sqlite']),
+                     'gate_ddl_mismatch')
+        elif chat and table in _CHAT_UNIQUES:
             import runpy
             frozen = runpy.run_path(str(ROOT / "migrations" / "versions" / CHAT_FILE))
 
@@ -706,6 +720,8 @@ def _validate_schema_signature(connection, objects, *, head, chat=False):
         }.get(table, [])
         if chat and table in _CHAT_UNIQUES:
             expected_auto = _CHAT_UNIQUES[table]
+        if table == 'agent_admission_gate':
+            expected_auto = [('pk', (1, ('gate_key',)))]
         _require(sorted(auto) == sorted(expected_auto), "initial_unique_mismatch")
     _require(all(kind in {"table", "index"} and name in expected_object_names
                  for kind, name, table, sql in objects), "unknown_schema_object")
@@ -715,8 +731,10 @@ def validate_initial_data_integrity(connection):
     _validate_data_integrity(connection, head=False)
 
 
-def _validate_data_integrity(connection, *, head, chat=False):
+def _validate_data_integrity(connection, *, head, chat=False, gate=False):
     schema = _CHAT_COLUMNS if chat else (_HEAD_COLUMNS if head else _COLUMNS)
+    if gate:
+        schema = {**schema, 'agent_admission_gate': [('gate_key', 'VARCHAR(16)', 1), ('lock_version', 'BIGINT', 1)]}
     _require(connection.execute("PRAGMA integrity_check").fetchall() == [("ok",)], "sqlite_integrity_failed")
     _require(not connection.execute("PRAGMA foreign_key_check").fetchall(), "foreign_key_orphans")
     for table, columns in schema.items():
@@ -727,7 +745,7 @@ def _validate_data_integrity(connection, *, head, chat=False):
                     continue
                 if kind == "BOOLEAN":
                     _require(type(value) is int and value in (0, 1), "invalid_boolean_value")
-                elif kind == "INTEGER":
+                elif kind in ("INTEGER", "BIGINT"):
                     _require(type(value) is int, "invalid_integer_value")
                 else:
                     _require(isinstance(value, str), "invalid_text_value")
@@ -754,6 +772,10 @@ def _validate_data_integrity(connection, *, head, chat=False):
                             datetime.fromisoformat(value)
                         except ValueError:
                             raise MigrationValidationError("invalid_initial_datetime") from None
+    if gate:
+        rows = connection.execute('SELECT gate_key,lock_version FROM agent_admission_gate').fetchall()
+        _require(len(rows) == 1 and rows[0][0] == 'global' and type(rows[0][1]) is int and rows[0][1] >= 0,
+                 'gate_seed_invalid')
     if chat:
         for table, column, values in (
                 ('chat_turns', 'status', "'pending','completed','failed','interrupted'"),
@@ -780,7 +802,8 @@ def _validate_revision_chain():
     expected = {
         "df8b049a3e7e_initial.py": (REVISION, None, INITIAL_HASH),
         FORWARD_FILE: (ALIGNED_REVISION, REVISION, FORWARD_HASH),
-        CHAT_FILE: (HEAD_REVISION, ALIGNED_REVISION, CHAT_HASH),
+        CHAT_FILE: (CHAT_REVISION, ALIGNED_REVISION, CHAT_HASH),
+        GATE_FILE: (HEAD_REVISION, CHAT_REVISION, GATE_HASH),
     }
     files = sorted(versions.glob("*.py"))
     _require({p.name for p in files} == set(expected), "revision_chain_not_approved")
@@ -808,18 +831,20 @@ def admit_migration_target(target):
             _require(any(kind == "table" and name == "alembic_version"
                          for kind, name, table, sql in objects), "version_table_missing")
             versions = connection.execute("SELECT version_num FROM alembic_version").fetchall()
-            _require(versions in ([(REVISION,)], [(ALIGNED_REVISION,)], [(HEAD_REVISION,)]), "initial_version_mismatch")
+            _require(versions in ([(REVISION,)], [(ALIGNED_REVISION,)], [(CHAT_REVISION,)], [(HEAD_REVISION,)]),
+                     "initial_version_mismatch")
             head = versions != [(REVISION,)]
-            chat = versions == [(HEAD_REVISION,)]
-            _validate_schema_signature(connection, objects, head=head, chat=chat)
-            _validate_data_integrity(connection, head=head, chat=chat)
-            state = "HEAD" if chat else ("ALIGNED" if head else "INITIAL")
+            chat = versions in ([(CHAT_REVISION,)], [(HEAD_REVISION,)])
+            gate = versions == [(HEAD_REVISION,)]
+            _validate_schema_signature(connection, objects, head=head, chat=chat, gate=gate)
+            _validate_data_integrity(connection, head=head, chat=chat, gate=gate)
+            state = "HEAD" if gate else ("CHAT" if chat else ("ALIGNED" if head else "INITIAL"))
     owner["admitted"] = True
     return state
 
 
 def create_minimal_migration_app(target):
-    _require(admit_migration_target(target) in {"EMPTY", "INITIAL", "ALIGNED", "HEAD"}, "admission_required")
+    _require(admit_migration_target(target) in {"EMPTY", "INITIAL", "ALIGNED", "CHAT", "HEAD"}, "admission_required")
     owner = _OWNED[target]
     _require(owner["app"] is None and owner["boundary"] is not None, "minimal_app_already_created")
     from flask import Flask
@@ -839,7 +864,7 @@ def create_minimal_migration_app(target):
     owner["app"] = application
     migrate.init_app(application, db)
     expected_metadata = {'users', 'habits', 'todos', 'records', 'cards',
-                         'conversations', 'chat_turns', 'chat_messages'}
+                         'conversations', 'chat_turns', 'chat_messages', 'agent_admission_gate'}
     _require(set(db.metadata.tables) == expected_metadata, "model_metadata_incomplete")
     return application
 
