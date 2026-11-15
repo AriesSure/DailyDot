@@ -40,7 +40,12 @@ STATES = ('UNAUTHORIZED', 'TARGET_VALIDATED', 'EMPTY_OWNED', 'INITIAL_VERIFIED',
           'EMPTY_VERIFIED', 'DISPOSED')
 STAGES = ('admission', 'application', 'identity', 'initial', 'history', 'forward',
           'schema', 'crud', 'repeat', 'downgrade', 'cleanup', 'release', 'complete')
-CRUD_SUBSTAGES = ('chat_crud', 'insert_defaults_commit', 'verify_defaults', 'update_commit', 'verify_update',
+SCHEMA_SUBSTAGES = ('schema_snapshot', 'schema_verify', 'schema_data', 'schema_history')
+CHAT_SUBSTAGES = ('chat_insert_conversation', 'chat_insert_turn', 'chat_insert_message',
+                  'chat_unique', 'chat_foreign_key', 'chat_role_check', 'chat_status_check',
+                  'chat_update', 'chat_delete')
+CRUD_SUBSTAGES = CHAT_SUBSTAGES + (
+    'chat_crud', 'insert_defaults_commit', 'verify_defaults', 'update_commit', 'verify_update',
                  'rollback_probe', 'record_unique', 'card_unique', 'card_foreign_key',
                  'todo_duplicate', 'card_delete', 'card_survivor', 'session_remove',
                  'schema_snapshot', 'data_snapshot')
@@ -795,17 +800,21 @@ class MigrationRun:
                     command.upgrade(config, 'head')
                     self.verify_server_identity(engine)
                     self.stage = 'schema'
+                    self.substage = 'schema_snapshot'
                     head_schema = schema_snapshot(engine)
+                    self.substage = 'schema_verify'
                     verify_head(head_schema, self.db.metadata, collation)
                     self.facts['tables'] = {name: {'charset': entry['charset'], 'collation': entry['collation']}
                                            for name, entry in sorted(head_schema.items())}
                     self.facts['types'] = {name: next(c[1] for c in head_schema[table]['columns'] if c[0] == column)
                         for name, table, column in (('record_date', 'records', 'checkin_date'),
                             ('record_time', 'records', 'checkin_time'), ('todo_completed', 'todos', 'completed'))}
+                    self.substage = 'schema_data'
                     after = data_snapshot(engine)
                     require(after['alembic_version'] == ((HEAD,),), 'migration_head_version_mismatch')
                     require(after['users'] == before['users'] and after['habits'] == before['habits'],
                             'migration_history_changed')
+                    self.substage = 'schema_history'
                     with engine.connect() as connection:
                         records = tuple(connection.execute(sa.text(
                             'SELECT id,checkin_date,habit_id,note FROM records ORDER BY id')).all())
@@ -816,8 +825,9 @@ class MigrationRun:
                                 and connection.execute(sa.text('SELECT count(*) FROM todos WHERE completed<>0')).scalar_one() == 0,
                                 'migration_history_changed')
                     self.advance('INITIAL_VERIFIED', 'HEAD_VERIFIED')
+                    self.stage = 'crud'
                     self.substage = 'chat_crud'
-                    verify_chat_crud(self.db)
+                    verify_chat_crud(self.db, self)
                     self.verify_crud_and_snapshots()
                     self.substage = None
                     self.stage = 'repeat'
@@ -944,7 +954,8 @@ def verify_crud(db, run):
 def safe_failure(exc, run):
     # No str(exc), repr(exc), SQL, parameters, traceback or URL is exported.
     stage = run.stage if isinstance(run.stage, str) and run.stage in STAGES else 'admission'
-    substage = run.substage if stage == 'crud' and isinstance(run.substage, str) and run.substage in CRUD_SUBSTAGES else None
+    allowed = CRUD_SUBSTAGES if stage == 'crud' else SCHEMA_SUBSTAGES if stage == 'schema' else ()
+    substage = run.substage if isinstance(run.substage, str) and run.substage in allowed else None
     errno = dbapi_mysql_errno(exc)
     code = 'mysql_forward_migration_failed'
     if type(exc) is RuntimeError and exc.args == ('forward_migration_preflight_failed',):
@@ -957,6 +968,10 @@ def safe_failure(exc, run):
     facts = {}
     if stage == 'crud' and substage == 'card_foreign_key' and valid_card_facts(run.card_probe):
         facts = {'card_foreign_key': dict(run.card_probe)}
+    if stage == 'crud' and substage in ('chat_role_check', 'chat_status_check'):
+        diagnostic = getattr(run, 'chat_diagnostic', None)
+        if valid_chat_diagnostic(diagnostic):
+            facts = {'chat_constraint': dict(diagnostic)}
     return {'status': 'failed', 'stage': stage, 'substage': substage,
             'error_code': code,
             'exception_type': type(exc).__name__ if type(exc).__name__ in EXCEPTION_TYPES else 'OtherError',
@@ -969,7 +984,9 @@ def validate_result(value):
                                                      'mysql_errno', 'state', 'facts'}, 'migration_child_protocol_invalid')
     require(value['status'] in ('passed', 'failed') and value['stage'] in STAGES and value['state'] in STATES,
             'migration_child_protocol_invalid')
-    require((value['substage'] is None or value['stage'] == 'crud' and value['substage'] in CRUD_SUBSTAGES)
+    allowed = CRUD_SUBSTAGES if value['stage'] == 'crud' else (
+        SCHEMA_SUBSTAGES if value['stage'] == 'schema' else ())
+    require((value['substage'] is None or value['substage'] in allowed)
             and value['error_code'] in (None,) + GENERAL_ERROR_CODES + (CRUD_ERROR_CODES if value['stage'] == 'crud' else ())
             and value['exception_type'] in (None,) + EXCEPTION_TYPES
             and (value['mysql_errno'] is None or valid_mysql_errno(value['mysql_errno'])),
@@ -996,7 +1013,9 @@ def validate_result(value):
                 and facts['types']['todo_completed'] in ('TINYINT(1)', 'BOOLEAN', 'BOOL'),
                 'migration_child_protocol_invalid')
     else:
-        require((not facts or value['stage'] == 'crud' and value['substage'] == 'card_foreign_key'
+        chat_facts = (value['stage'] == 'crud' and value['substage'] in ('chat_role_check', 'chat_status_check')
+                      and set(facts) == {'chat_constraint'} and valid_chat_diagnostic(facts['chat_constraint']))
+        require((not facts or chat_facts or value['stage'] == 'crud' and value['substage'] == 'card_foreign_key'
                  and set(facts) == {'card_foreign_key'} and valid_card_facts(facts['card_foreign_key']))
                 and value['error_code'] is not None
                 and value['exception_type'] is not None, 'migration_child_protocol_invalid')
@@ -1036,19 +1055,21 @@ def main():
     return 0 if result['status'] == 'passed' else 1
 
 
-def verify_chat_crud(db):
+def verify_chat_crud(db, run):
     """Real CI-only CRUD/constraint probes on the three migrated tables."""
     from app.models import Conversation, ChatTurn, ChatMessage
-    from sqlalchemy.exc import IntegrityError
+    run.substage = 'chat_insert_conversation'
     convo = Conversation(user_id=1)
     db.session.add(convo)
     db.session.commit()
     require(len(convo.id) == 32 and convo.title == '新对话' and convo.next_turn_no == 1,
             'migration_orm_default_failed')
+    run.substage = 'chat_insert_turn'
     turn = ChatTurn(conversation_id=convo.id, turn_no=1, client_request_id='a' * 32,
                     request_digest='b' * 64)
     db.session.add(turn)
     db.session.commit()
+    run.substage = 'chat_insert_message'
     msg = ChatMessage(turn_id=turn.id, position=0, role='assistant', tool_calls=[
         {'id': 'synthetic', 'type': 'function', 'function': {'name': 'list_user_habits', 'arguments': '{}'}}])
     db.session.add(msg)
@@ -1062,16 +1083,16 @@ def verify_chat_crud(db):
         ChatTurn(conversation_id=convo.id, turn_no=2, client_request_id='e' * 32,
                  request_digest='f' * 64, status='invalid'),
     )
-    for probe in probes:
-        try:
-            db.session.add(probe)
-            db.session.commit()
-        except IntegrityError:
-            db.session.rollback()
-        else:
-            raise MigrationSafetyError('migration_constraint_not_enforced')
+    rules = (('chat_unique', (1062,), None), ('chat_foreign_key', (1216, 1452), None),
+             ('chat_role_check', (3819,), 'ck_chat_messages_role'),
+             ('chat_status_check', (3819,), 'ck_chat_turns_status'))
+    for probe, (substage, expected, constraint) in zip(probes, rules):
+        run.substage = substage
+        chat_constraint_probe(db, run, probe, expected, constraint)
+    run.substage = 'chat_update'
     turn.status = 'completed'
     db.session.commit()
+    run.substage = 'chat_delete'
     cid = convo.id
     db.session.execute(sa.delete(Conversation).where(Conversation.id == cid))
     db.session.commit()
@@ -1079,6 +1100,41 @@ def verify_chat_crud(db):
     require(db.session.query(ChatTurn).filter_by(conversation_id=cid).count() == 0
             and db.session.query(ChatMessage).count() == 0, 'migration_orm_delete_failed')
     db.session.remove()
+
+
+def valid_chat_diagnostic(value):
+    return (type(value) is dict and set(value) == {'sqlstate', 'constraint', 'table', 'operation'}
+            and value['sqlstate'] in ('unknown', '23000', 'HY000')
+            and value['constraint'] in ('unknown', 'ck_chat_messages_role', 'ck_chat_turns_status')
+            and value['table'] in ('chat_messages', 'chat_turns') and value['operation'] == 'INSERT')
+
+
+def chat_constraint_probe(db, run, row, expected, constraint):
+    run.chat_diagnostic = None
+    db.session.add(row)
+    try:
+        db.session.commit()
+    except sa.exc.DBAPIError as exc:
+        errno = dbapi_mysql_errno(exc)
+        if constraint is not None:
+            name = 'unknown'
+            args = exc.orig.args if isinstance(exc.orig, pymysql.MySQLError) else ()
+            match = re.fullmatch(r"Check constraint '([a-z0-9_]+)' is violated\.", args[1]) if (
+                len(args) > 1 and type(args[1]) is str) else None
+            if match and match.group(1) in ('ck_chat_messages_role', 'ck_chat_turns_status'):
+                name = match.group(1)
+            state = getattr(exc.orig, 'sqlstate', None)
+            run.chat_diagnostic = {'sqlstate': state if state in ('23000', 'HY000') else 'unknown',
+                                   'constraint': name, 'table': row.__tablename__, 'operation': 'INSERT'}
+            require(not match or match.group(1) == constraint,
+                    'migration_constraint_wrong_error', mysql_errno=errno)
+            require(name in ('unknown', constraint), 'migration_constraint_wrong_error', mysql_errno=errno)
+        require(isinstance(exc.orig, pymysql.MySQLError) and errno in expected,
+                'migration_constraint_wrong_error', mysql_errno=errno)
+        db.session.rollback()
+        run.chat_diagnostic = None
+    else:
+        raise MigrationSafetyError('migration_constraint_not_enforced')
 
 
 if __name__ == '__main__':

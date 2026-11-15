@@ -1476,3 +1476,75 @@ def test_named_chat_foreign_key_expectation_is_exact(catalog, table, name):
     with pytest.raises(m.MigrationSafetyError):
         run.authorize_cleanup()
     assert not run.cleanup_authorized and data.drops == []
+
+
+@pytest.mark.parametrize('exception_class,driver_class', [
+    (sa.exc.OperationalError, pymysql.OperationalError), (sa.exc.IntegrityError, pymysql.IntegrityError)])
+@pytest.mark.parametrize('table,constraint,substage', [
+    ('chat_messages', 'ck_chat_messages_role', 'chat_role_check'),
+    ('chat_turns', 'ck_chat_turns_status', 'chat_status_check'),
+])
+def test_chat_check_3819_is_expected_database_rejection(exception_class, driver_class, table, constraint, substage):
+    run = m.MigrationRun()
+    run.stage, run.substage = 'crud', substage
+    db = SimpleNamespace(session=Mock())
+    db.session.commit.side_effect = exception_class(
+        'private SQL', {'password': PASSWORD},
+        driver_class(3819, f"Check constraint '{constraint}' is violated."))
+    row = SimpleNamespace(__tablename__=table)
+    m.chat_constraint_probe(db, run, row, (3819,), constraint)
+    db.session.rollback.assert_called_once_with()
+    assert run.chat_diagnostic is None and not run.cleanup_authorized
+
+
+@pytest.mark.parametrize('errno', [1062, 1452, None, True])
+def test_chat_check_does_not_accept_other_database_errors(errno):
+    run = m.MigrationRun()
+    run.stage, run.substage = 'crud', 'chat_role_check'
+    db = SimpleNamespace(session=Mock())
+    db.session.commit.side_effect = sa.exc.OperationalError(
+        'private SQL', None, pymysql.OperationalError(errno, "Check constraint 'ck_chat_messages_role' is violated."))
+    with pytest.raises(m.MigrationSafetyError):
+        m.chat_constraint_probe(db, run, SimpleNamespace(__tablename__='chat_messages'), (3819,),
+                                'ck_chat_messages_role')
+    assert not run.cleanup_authorized
+    payload = m.validate_result(m.safe_failure(m.MigrationSafetyError('migration_constraint_wrong_error'), run))
+    assert payload['substage'] == 'chat_role_check'
+    assert payload['facts']['chat_constraint']['constraint'] == 'ck_chat_messages_role'
+    assert PASSWORD not in json.dumps(payload)
+
+
+def test_chat_constraint_not_enforced_is_still_failure():
+    run = m.MigrationRun()
+    db = SimpleNamespace(session=Mock())
+    with pytest.raises(m.MigrationSafetyError, match='migration_constraint_not_enforced'):
+        m.chat_constraint_probe(db, run, SimpleNamespace(__tablename__='chat_messages'), (3819,),
+                                'ck_chat_messages_role')
+    assert not run.cleanup_authorized
+
+
+@pytest.mark.parametrize('message,name', [
+    ("private " + PASSWORD, 'unknown'),
+    ("Check constraint 'ck_chat_turns_status' is violated.", 'ck_chat_turns_status'),
+])
+def test_wrong_constraint_or_unknown_message_diagnostics_are_private(message, name):
+    run = m.MigrationRun()
+    run.stage, run.substage = 'crud', 'chat_role_check'
+    db = SimpleNamespace(session=Mock())
+    db.session.commit.side_effect = sa.exc.OperationalError(
+        'private SQL', None, pymysql.OperationalError(1062, message))
+    with pytest.raises(m.MigrationSafetyError) as failure:
+        m.chat_constraint_probe(db, run, SimpleNamespace(__tablename__='chat_messages'), (3819,),
+                                'ck_chat_messages_role')
+    payload = m.validate_result(m.safe_failure(failure.value, run))
+    assert payload['facts']['chat_constraint']['constraint'] == name
+    assert payload['facts']['chat_constraint']['sqlstate'] == 'unknown'
+    assert PASSWORD not in json.dumps(payload) and 'private SQL' not in json.dumps(payload)
+
+
+@pytest.mark.parametrize('substage', m.SCHEMA_SUBSTAGES)
+def test_schema_substage_is_preserved_without_raw_exception(substage):
+    run = m.MigrationRun()
+    run.stage, run.substage = 'schema', substage
+    result = m.validate_result(m.safe_failure(RuntimeError(PASSWORD), run))
+    assert result['substage'] == substage and PASSWORD not in json.dumps(result)
