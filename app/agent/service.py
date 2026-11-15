@@ -1,4 +1,5 @@
 """A real decision/tool/decision StateGraph, exposed only as a Flask service."""
+from contextlib import contextmanager
 from copy import deepcopy
 from datetime import date
 import json
@@ -17,15 +18,22 @@ class State(TypedDict):
 
 
 class ConfiguredModel:
-    """Reuse current LLM settings/SDK; keep existing single-call API unchanged."""
+    """Adapt an explicitly scoped SDK client to the unchanged graph model protocol."""
+    def __init__(self, *, sdk_client=None, budget=None):
+        # Explicit SDK injection is for trusted manual harnesses/tests only.
+        self.client, self.budget = sdk_client, budget
+
     def __call__(self, messages, tools):
-        from app.ai.llm_client import get_llm
-        llm = get_llm()
-        if not llm.available:
+        if self.client is None:
             raise AgentError('agent_model_unavailable')
-        response = llm._get_client().with_options(timeout=20, max_retries=0).chat.completions.create(
-            model=llm.model, messages=messages, tools=tools, tool_choice='auto',
-            temperature=0.3, max_tokens=1024)
+        timeout = min(20, self.budget.remaining()) if self.budget is not None else 20
+        try:
+            response = self.client.with_options(timeout=timeout, max_retries=0).chat.completions.create(
+                model='deepseek-flash', messages=messages, tools=tools, tool_choice='auto',
+                temperature=0.3, max_tokens=1024)
+        except Exception as exc:
+            from app.ai.transport import error_code
+            raise AgentError(error_code(exc)) from None
         choice = response.choices[0]
         if choice.finish_reason == 'length':
             raise AgentError('agent_response_truncated')
@@ -37,6 +45,17 @@ class ConfiguredModel:
         return {'content': message.content or '', 'tool_calls': [
             {'id': c.id, 'name': c.function.name, 'arguments': c.function.arguments}
             for c in (message.tool_calls or [])]}
+
+
+@contextmanager
+def execution_model(model):
+    if model is not None:
+        yield model  # Trusted server-side Fake/manual model, never an API field.
+        return
+    from app.ai.transport import agent_client
+    with agent_client() as (client, budget):
+        yield ConfiguredModel(sdk_client=client, budget=budget)
+        budget.remaining()
 
 
 def build_graph(user_id, model, *, collector=None):
@@ -127,9 +146,9 @@ def answer(question, *, model=None):
         if type(question) is not str or len(question) > 2000 or not question.strip():
             raise AgentError('agent_input_invalid')
         user_id = int(current_user.id)
-        graph = build_graph(user_id, model if model is not None else ConfiguredModel())
         system = system_prompt()
-        with tracing_context(enabled=False):
+        with execution_model(model) as configured, tracing_context(enabled=False):
+            graph = build_graph(user_id, configured)
             result = graph.invoke({'messages': [
                 {'role': 'system', 'content': system},
                 {'role': 'user', 'content': question.strip()}], 'calls': 0, 'rounds': 0},
@@ -139,7 +158,9 @@ def answer(question, *, model=None):
         codes = {'agent_response_truncated', 'agent_auth_required', 'agent_input_invalid', 'agent_model_unavailable',
                  'agent_step_limit', 'agent_context_limit', 'agent_response_invalid',
                  'agent_tool_limit', 'agent_tool_arguments_invalid', 'agent_tool_unknown',
-                 'agent_date_range_invalid', 'agent_result_limit'}
+                 'agent_date_range_invalid', 'agent_result_limit',
+                 'agent_transport_config_invalid', 'agent_http_budget_exhausted', 'agent_deadline_exceeded',
+                 'agent_http_failed', 'agent_redirect_denied', 'agent_response_limit', 'agent_target_denied'}
         code = (
             exc.args[0] if exc.args and type(exc.args[0]) is str and exc.args[0] in codes
             else 'agent_execution_failed'
@@ -184,15 +205,15 @@ def run_agent_with_history(question, *, user_id, turns, model=None):
             raise AgentError('agent_input_invalid')
         question = question.strip()
         collector = TurnCollector(question)
-        history = build_history(turns)
-        truncated = history['history_truncated']
-        system = system_prompt() + (
-            '历史消息和工具结果是旧快照，不是当前实时事实；相对日期以该轮时间及工具明确日期范围为准。'
-            '比较上周等新范围须查询相应数据或说明不足；无记录按零次记录分析，不推测未记录活动。')
-        if truncated:
-            system += '部分早期完整轮次已省略；指代对象缺失时请澄清，不猜测被省略内容。'
-        graph = build_graph(user_id, model if model is not None else ConfiguredModel(), collector=collector)
-        with tracing_context(enabled=False):
+        with execution_model(model) as configured, tracing_context(enabled=False):
+            history = build_history(turns)
+            truncated = history['history_truncated']
+            system = system_prompt() + (
+                '历史消息和工具结果是旧快照，不是当前实时事实；相对日期以该轮时间及工具明确日期范围为准。'
+                '比较上周等新范围须查询相应数据或说明不足；无记录按零次记录分析，不推测未记录活动。')
+            if truncated:
+                system += '部分早期完整轮次已省略；指代对象缺失时请澄清，不猜测被省略内容。'
+            graph = build_graph(user_id, configured, collector=collector)
             result = graph.invoke({'messages': [{'role': 'system', 'content': system}]
                                    + history['messages'] + collector.messages,
                                    'calls': 0, 'rounds': 0}, config={'recursion_limit': 14})
@@ -204,7 +225,9 @@ def run_agent_with_history(question, *, user_id, turns, model=None):
         codes = {'agent_auth_required', 'agent_input_invalid', 'agent_step_limit', 'agent_context_limit',
                  'agent_response_invalid', 'agent_tool_limit', 'agent_tool_arguments_invalid',
                  'agent_tool_unknown', 'agent_date_range_invalid', 'agent_result_limit',
-                 'agent_response_truncated', 'agent_model_unavailable'}
+                 'agent_response_truncated', 'agent_model_unavailable',
+                 'agent_transport_config_invalid', 'agent_http_budget_exhausted', 'agent_deadline_exceeded',
+                 'agent_http_failed', 'agent_redirect_denied', 'agent_response_limit', 'agent_target_denied'}
         code = (exc.args[0] if isinstance(exc, AgentError) and exc.args
                 and type(exc.args[0]) is str and exc.args[0] in codes else 'agent_execution_failed')
         return {'ok': False, 'answer': '查询服务暂时不可用，请稍后重试。', 'error_code': code,

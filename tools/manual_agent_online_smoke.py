@@ -342,7 +342,7 @@ def run_suite(base, budget, *, offline=False):
                 current['tools'].append(name)
                 return value
 
-            with patch.object(llm, '_client', sdk), patch.object(resource_class, 'create', observe_create), \
+            with patch.object(resource_class, 'create', observe_create), \
                     patch.object(service, 'query_tool', observe_query):
                 for scene, question, required in SCENARIOS:
                     budget.start(scene)
@@ -353,7 +353,7 @@ def run_suite(base, budget, *, offline=False):
                     with app.test_request_context():
                         login_user(a)
                         budget.stage = 'agent_execution'
-                        result = service.answer(question)
+                        result = service.answer(question, model=service.ConfiguredModel(sdk_client=sdk))
                         if evidence is not None:
                             from flask_login import current_user
                             evidence.finish(int(current_user.id), result)

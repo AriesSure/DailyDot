@@ -154,17 +154,13 @@ def test_empty_user_and_no_records(app, db):
 
 
 def test_configured_sdk_adapter_preserves_real_tool_call_protocol(monkeypatch):
-    from app.ai import llm_client
     completion = SimpleNamespace(choices=[SimpleNamespace(
         finish_reason='tool_calls', message=SimpleNamespace(content='', tool_calls=[
             SimpleNamespace(id='id', function=SimpleNamespace(name='list_user_habits', arguments='{}'))]))])
     from unittest.mock import Mock
     sdk = Mock()
     sdk.with_options.return_value.chat.completions.create.return_value = completion
-    monkeypatch.setattr(
-        llm_client, 'get_llm', lambda: SimpleNamespace(available=True, model='test', _get_client=lambda: sdk)
-    )
-    assert service.ConfiguredModel()([], []) == call('list_user_habits', cid='id')
+    assert service.ConfiguredModel(sdk_client=sdk)([], []) == call('list_user_habits', cid='id')
     sdk.with_options.assert_called_once_with(timeout=20, max_retries=0)
 
 

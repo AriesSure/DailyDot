@@ -103,14 +103,45 @@ def test_actual_sdk_redirect_and_server_error_never_retry(monkeypatch):
     ('unknown', 'text', [], 'agent_response_invalid'), ('stop', '', [], 'agent_response_invalid'),
     ('tool_calls', '', [], 'agent_response_invalid')])
 def test_finish_reason_is_not_assumed_success(monkeypatch, reason, content, calls, code):
-    from app.ai import llm_client
     sdk = Mock()
     sdk.with_options.return_value.chat.completions.create.return_value = SimpleNamespace(choices=[
         SimpleNamespace(finish_reason=reason, message=SimpleNamespace(content=content, tool_calls=calls))])
-    monkeypatch.setattr(llm_client, 'get_llm', lambda: SimpleNamespace(
-        available=True, model=m.MODEL, _get_client=lambda: sdk))
     with pytest.raises(AgentError, match=code):
-        ConfiguredModel()([], [])
+        ConfiguredModel(sdk_client=sdk)([], [])
+
+
+def test_smoke_injects_its_own_client_and_failed_send_keeps_budget(monkeypatch):
+    from app.agent import service
+    from app.ai import transport
+    from app.ai import llm_client
+    for key, value in ENV.items():
+        monkeypatch.setenv(key, value)
+    monkeypatch.setattr(llm_client, '_llm', None)
+    original_sdk, original_answer = m.sdk_client, service.answer
+    clients, requests = [], []
+
+    def sdk_factory(*args, **kwargs):
+        client = original_sdk(*args, **kwargs)
+        clients.append(client)
+        return client
+
+    def answer(question, *, model):
+        assert model.client is clients[-1]
+        return original_answer(question, model=model)
+
+    def backend(instance, request):
+        requests.append(request)
+        return httpx.Response(429, json={'error': {'message': 'synthetic rate limit'}})
+
+    monkeypatch.setattr(m, 'sdk_client', sdk_factory)
+    monkeypatch.setattr(service, 'answer', answer)
+    monkeypatch.setattr(httpx.HTTPTransport, 'handle_request', backend)
+    monkeypatch.setattr(transport, 'agent_client', Mock(side_effect=AssertionError('no formal fallback')))
+    budget = m.Budget()
+    result = m.run_suite(m.BASES[0], budget, offline=True)
+    assert result['status'] == 'failed' and not result['online_accepted']
+    assert len(clients) == len(requests) == budget.total == result['requests'] == 1
+    assert budget.counts['S1'] == 1
 
 
 def test_foreign_tool_rows_are_blocked_before_http(monkeypatch):
@@ -244,7 +275,8 @@ def test_agent_caught_pre_send_failure_keeps_diagnostic_stage(monkeypatch):
     backend = Mock(side_effect=AssertionError('no send permitted'))
     monkeypatch.setattr(httpx.HTTPTransport, 'handle_request', backend)
 
-    def fail(question):
+    def fail(question, *, model):
+        assert isinstance(model, ConfiguredModel) and model.client is not None
         budget.stage = 'http_validation'
         return {'ok': False, 'error_code': 'agent_execution_failed'}
 
