@@ -52,6 +52,7 @@ CRUD_SUBSTAGES = CHAT_SUBSTAGES + (
 # Only checks reachable during CRUD or its following Session/snapshot operations.
 # bind/dependency/admission/cleanup-only codes are deliberately not public here.
 CRUD_ERROR_CODES = (
+    'migration_admission_assertion_failed',
     'migration_card_probe_unverified',
     'migration_orm_default_failed', 'migration_orm_update_failed', 'migration_orm_rollback_failed',
     'migration_constraint_wrong_error', 'migration_constraint_not_enforced',
@@ -67,7 +68,8 @@ CRUD_ERROR_CODES = (
 )
 GENERAL_ERROR_CODES = ('mysql_forward_migration_failed', 'forward_migration_preflight_failed',
                        'migration_server_identity_changed')
-EXCEPTION_TYPES = ('MigrationSafetyError', 'RuntimeError', 'OperationalError', 'IntegrityError',
+EXCEPTION_TYPES = ('AdmissionDiagnosticError', 'MigrationSafetyError', 'RuntimeError', 'OperationalError',
+                   'IntegrityError',
                    'DBAPIError', 'ProgrammingError', 'CommandError', 'TimeoutError', 'AssertionError', 'OtherError')
 
 ADMISSION_FACTS = ('same_user', 'global_slot', 'duplicate', 'rate', 'rollback',
@@ -994,6 +996,11 @@ def safe_failure(exc, run):
         if code in ('migration_constraint_wrong_error', 'migration_card_probe_unverified') and valid_mysql_errno(exc.mysql_errno):
             errno = exc.mysql_errno
     facts = {}
+    from tests.agent_admission_cases import AdmissionDiagnosticError, valid_admission_diagnostic
+    if (type(exc) is AdmissionDiagnosticError and stage == 'crud' and substage == 'admission_concurrency'
+            and valid_admission_diagnostic(exc.diagnostic)):
+        code = 'migration_admission_assertion_failed'
+        facts = {'admission': exc.diagnostic}
     if stage == 'crud' and substage == 'card_foreign_key' and valid_card_facts(run.card_probe):
         facts = {'card_foreign_key': dict(run.card_probe)}
     if stage == 'crud' and substage in ('chat_role_check', 'chat_status_check'):
@@ -1043,9 +1050,17 @@ def validate_result(value):
                 and facts['types']['todo_completed'] in ('TINYINT(1)', 'BOOLEAN', 'BOOL'),
                 'migration_child_protocol_invalid')
     else:
+        from tests.agent_admission_cases import valid_admission_diagnostic
+        admission_facts = (value['stage'] == 'crud' and value['substage'] == 'admission_concurrency'
+                           and value['error_code'] == 'migration_admission_assertion_failed'
+                           and value['exception_type'] == 'AdmissionDiagnosticError'
+                           and set(facts) == {'admission'} and valid_admission_diagnostic(facts['admission']))
+        require(value['error_code'] != 'migration_admission_assertion_failed' or admission_facts,
+                'migration_child_protocol_invalid')
         chat_facts = (value['stage'] == 'crud' and value['substage'] in ('chat_role_check', 'chat_status_check')
                       and set(facts) == {'chat_constraint'} and valid_chat_diagnostic(facts['chat_constraint']))
-        require((not facts or chat_facts or value['stage'] == 'crud' and value['substage'] == 'card_foreign_key'
+        require((not facts or admission_facts or chat_facts
+                 or value['stage'] == 'crud' and value['substage'] == 'card_foreign_key'
                  and set(facts) == {'card_foreign_key'} and valid_card_facts(facts['card_foreign_key']))
                 and value['error_code'] is not None
                 and value['exception_type'] is not None, 'migration_child_protocol_invalid')

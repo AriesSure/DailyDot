@@ -18,6 +18,7 @@ import sqlalchemy as sa
 from sqlalchemy.dialects import mysql
 
 from tests import mysql_migration_ci as m
+from tests import agent_admission_cases as admission_cases
 
 
 PASSWORD = 'fictional-ci-password-0123456789'
@@ -1581,3 +1582,155 @@ def test_schema_substage_is_preserved_without_raw_exception(substage):
     run.stage, run.substage = 'schema', substage
     result = m.validate_result(m.safe_failure(RuntimeError(PASSWORD), run))
     assert result['substage'] == substage and PASSWORD not in json.dumps(result)
+
+
+# Offline diagnostic protocol tests; no real MySQL behavior is claimed here.
+
+def admission_diagnostic(assertion_id='same_user_one_winner'):
+    return {'scenario_id': admission_cases.ASSERTIONS[assertion_id], 'assertion_id': assertion_id,
+            'expected': list(admission_cases.EXPECTED[assertion_id]), 'actual': ['agent_admission_unavailable'],
+            'outcome_codes': ['agent_admission_unavailable'], 'time_precision': {'verified': False}}
+
+
+def admission_failure(diagnostic):
+    run = SimpleNamespace(stage='crud', substage='admission_concurrency', state='HEAD_VERIFIED')
+    return m.safe_failure(admission_cases.AdmissionDiagnosticError(diagnostic), run)
+
+
+@pytest.mark.parametrize('assertion_id', tuple(admission_cases.ASSERTIONS))
+def test_admission_assertion_protocol_roundtrip(assertion_id):
+    value = admission_diagnostic(assertion_id)
+    payload = admission_failure(value)
+    assert payload['error_code'] == 'migration_admission_assertion_failed'
+    assert m.validate_result(json.loads(json.dumps(payload)))['facts'] == {'admission': value}
+
+
+@pytest.mark.parametrize('field,value', [
+    ('assertion_id', 'unknown'), ('scenario_id', 'unknown'), ('actual', ['unknown']),
+    ('outcome_codes', ['unknown']), ('expected', ['unknown']), ('actual', [True]),
+    ('time_precision', {}), ('actual', []), ('actual', ['created'] * 3),
+])
+def test_invalid_admission_diagnostic_rejected(field, value):
+    diagnostic = admission_diagnostic()
+    diagnostic[field] = value
+    assert not admission_cases.valid_admission_diagnostic(diagnostic)
+    payload = admission_failure(diagnostic)
+    assert payload['error_code'] == 'mysql_forward_migration_failed' and payload['facts'] == {}
+    payload['error_code'] = 'migration_admission_assertion_failed'
+    payload['facts'] = {'admission': diagnostic}
+    with pytest.raises(m.MigrationSafetyError, match='migration_child_protocol_invalid'):
+        m.validate_result(payload)
+
+
+def test_admission_secret_and_missing_facts_never_exported():
+    diagnostic = admission_diagnostic()
+    diagnostic['secret'] = URL + PASSWORD + ' private SQL parameters'
+    payload = admission_failure(diagnostic)
+    assert PASSWORD not in json.dumps(payload) and 'private SQL' not in json.dumps(payload)
+    payload['error_code'] = 'migration_admission_assertion_failed'
+    with pytest.raises(m.MigrationSafetyError, match='migration_child_protocol_invalid'):
+        m.validate_result(payload)
+    assert admission_cases.outcome(URL) == 'other'
+    assert admission_cases.outcome(1) == 'other'
+    assert admission_cases.outcome(True) == 'created'
+    assert admission_cases.outcome(False) == 'duplicate'
+
+
+def time_diagnostic():
+    return {'verified': True, 'server_version': '8.0.46', 'truncate_fractional': False,
+            'datetime_precision': 0, 'utc_microsecond': 750000, 'future_rows': 1, 'max_future_us': 250000,
+            'samples': [{'input_us': v, 'read_us': 0, 'delta_us': -v, 'greater_than_input': False}
+                        for v in (250000, 500000, 750000)]}
+
+
+def test_time_precision_diagnostic_protocol_roundtrip():
+    diagnostic = admission_diagnostic()
+    diagnostic['time_precision'] = time_diagnostic()
+    assert m.validate_result(admission_failure(diagnostic))['facts']['admission'] == diagnostic
+
+
+@pytest.mark.parametrize('field,value', [
+    ('server_version', URL), ('datetime_precision', 7), ('datetime_precision', True),
+    ('utc_microsecond', 1000000), ('truncate_fractional', 1), ('future_rows', -1),
+    ('max_future_us', 86400000001), ('samples', []), ('verified', 1),
+])
+def test_time_precision_types_and_bounds(field, value):
+    diagnostic = time_diagnostic()
+    diagnostic[field] = value
+    assert not admission_cases.valid_time_diagnostic(diagnostic)
+
+
+def test_admission_failure_never_authorizes_cleanup(catalog):
+    run, data = catalog
+    run.admission_verified = False
+    payload = admission_failure(admission_diagnostic())
+    assert m.validate_result(payload)['status'] == 'failed'
+    with pytest.raises(m.MigrationSafetyError, match='migration_admission_not_verified'):
+        run.authorize_cleanup()
+    assert not run.cleanup_authorized and not data.drops
+
+
+def test_time_probe_query_failure_rolls_back_without_fabrication():
+    connection = Mock()
+    connection.__enter__ = Mock(return_value=connection)
+    connection.__exit__ = Mock(return_value=False)
+    engine = Mock(dialect=SimpleNamespace(name='mysql'))
+    engine.connect.return_value = connection
+    session = Mock()
+    session.__enter__ = Mock(return_value=session)
+    session.__exit__ = Mock(return_value=False)
+    session.execute.side_effect = RuntimeError(URL + PASSWORD)
+    with patch.object(admission_cases, 'Session', return_value=session):
+        assert admission_cases.mysql_time_probe(engine, None) == {'verified': False}
+    session.rollback.assert_called_once()
+
+
+def test_future_time_query_failure_is_unknown_not_zero():
+    engine = Mock()
+    engine.connect.side_effect = RuntimeError(PASSWORD)
+    diagnostic = time_diagnostic()
+    result = admission_cases.future_time_probe(engine, 1, diagnostic, None)
+    assert result['future_rows'] is result['max_future_us'] is None
+    assert diagnostic['future_rows'] == 1  # No mutation of original evidence.
+
+
+def test_rollback_precision_probe_offline_sql_roundtrips():
+    # Stub SQL responses exercise collection only, never a claim about MySQL rounding.
+    from datetime import datetime
+    connection = Mock()
+    connection.__enter__ = Mock(return_value=connection)
+    connection.__exit__ = Mock(return_value=False)
+    connection.execute.return_value.scalar_one.return_value = 0
+    engine = Mock(dialect=SimpleNamespace(name='mysql'))
+    engine.connect.return_value = connection
+    session = Mock()
+    session.__enter__ = Mock(return_value=session)
+    session.__exit__ = Mock(return_value=False)
+    responses = [Mock(one=Mock(return_value=('8.0.46', '', datetime(2026, 1, 1, microsecond=750000)))),
+                 Mock(scalar_one=Mock(return_value=0))]
+    responses += [Mock(one=Mock(return_value=(datetime(2026, 1, 1, 12, 0, second), greater)))
+                  for second, greater in ((0, 0), (1, 1), (1, 1))]
+    session.execute.side_effect = responses
+    with patch.object(admission_cases, 'Session', return_value=session):
+        result = admission_cases.mysql_time_probe(engine, None)
+    assert result['verified'] is True
+    assert [r['input_us'] for r in result['samples']] == [250000, 500000, 750000]
+    assert [r['delta_us'] for r in result['samples']] == [-250000, 500000, 250000]
+    assert len(session.execute.call_args_list) == 5 and session.flush.call_count == 5
+    session.rollback.assert_called_once()
+    assert connection.execute.call_count == 2  # Independently observe row rollback.
+
+
+@pytest.mark.parametrize('field,value', [('time_precision', None), ('expected', ['other'])])
+def test_admission_missing_time_or_forged_expectation_rejected(field, value):
+    diagnostic = admission_diagnostic()
+    diagnostic[field] = value
+    assert not admission_cases.valid_admission_diagnostic(diagnostic)
+
+
+@pytest.mark.parametrize('field,value', [('read_us', True), ('delta_us', 1000001),
+                                         ('greater_than_input', 1), ('input_us', 1)])
+def test_time_probe_sample_fields_strict(field, value):
+    diagnostic = time_diagnostic()
+    diagnostic['samples'][0][field] = value
+    assert not admission_cases.valid_time_diagnostic(diagnostic)
