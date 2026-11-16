@@ -82,6 +82,7 @@ def _register_blueprints(app: Flask) -> None:
     from app.blueprints.cards.routes import cards_bp
     from app.blueprints.stats.routes import stats_bp
     from app.blueprints.ai.routes import ai_bp
+    from app.blueprints.agent.routes import agent_bp
 
     app.register_blueprint(auth_bp)
     app.register_blueprint(main_bp)
@@ -90,6 +91,7 @@ def _register_blueprints(app: Flask) -> None:
     app.register_blueprint(cards_bp)
     app.register_blueprint(stats_bp)
     app.register_blueprint(ai_bp)
+    app.register_blueprint(agent_bp)
 
 
 def _ensure_dev_tables(app: Flask) -> None:
