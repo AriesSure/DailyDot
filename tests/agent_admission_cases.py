@@ -139,6 +139,12 @@ def valid_admission_diagnostic(value):
             and valid_time_diagnostic(value['time_precision']))
 
 
+def check_probe_connection(connection, engine, active):
+    if (connection.engine is not engine or connection.closed is not False
+            or connection.invalidated is not False or connection.in_transaction() is not active):
+        raise RuntimeError('probe_connection_state_invalid')
+
+
 def mysql_time_probe(engine, verify_connection):
     """Dedicated synthetic rows, read back via SQL in the same transaction; always rollback."""
     if engine.dialect.name != 'mysql':
@@ -148,9 +154,15 @@ def mysql_time_probe(engine, verify_connection):
     failure = None
     try:
         with engine.connect() as connection:
+            physical_connection = connection.connection.driver_connection
+            connection.begin()
+            check_probe_connection(connection, engine, True)
             if verify_connection:
                 verify_connection(connection)
             connection.rollback()
+            check_probe_connection(connection, engine, False)
+            if connection.connection.driver_connection is not physical_connection:
+                raise RuntimeError('probe_physical_connection_changed')
             with Session(connection) as session:
                 try:
                     phase = 'server_metadata'
@@ -197,6 +209,9 @@ def mysql_time_probe(engine, verify_connection):
                     phase = 'transaction_rollback'
                     try:
                         session.rollback()
+                        check_probe_connection(connection, engine, False)
+                        if connection.connection.driver_connection is not physical_connection:
+                            raise RuntimeError('probe_physical_connection_changed')
                     except Exception as exc:
                         rollback = probe_error(phase, exc)
                         if failure is None:
@@ -204,14 +219,36 @@ def mysql_time_probe(engine, verify_connection):
                         failure['rollback_failure'] = rollback
             if failure is not None:
                 return failure
-            # Rollback must be observable from a fresh read transaction.
+            # Keep the original checked out: residue reads use another physical connection.
             phase = 'rollback_user_check'
-            if connection.execute(sa.select(sa.func.count()).select_from(User).where(User.id == uid)).scalar_one():
-                return probe_failure(phase, kind='residue')
-            phase = 'rollback_conversation_check'
-            if connection.execute(sa.select(sa.func.count()).select_from(Conversation).where(
-                    Conversation.id == cid)).scalar_one():
-                return probe_failure(phase, kind='residue')
+            with engine.connect() as residue:
+                if (residue is connection or residue.connection.driver_connection
+                        is connection.connection.driver_connection):
+                    raise RuntimeError('probe_residue_connection_not_independent')
+                residue.begin()
+                try:
+                    check_probe_connection(residue, engine, True)
+                    if verify_connection:
+                        verify_connection(residue)
+                    if residue.execute(sa.select(sa.func.count()).select_from(User).where(User.id == uid)).scalar_one():
+                        failure = probe_failure(phase, kind='residue')
+                    else:
+                        phase = 'rollback_conversation_check'
+                        if residue.execute(sa.select(sa.func.count()).select_from(Conversation).where(
+                                Conversation.id == cid)).scalar_one():
+                            failure = probe_failure(phase, kind='residue')
+                except Exception as exc:
+                    failure = probe_failure(phase, exc)
+                finally:
+                    try:
+                        residue.rollback()
+                        check_probe_connection(residue, engine, False)
+                    except Exception as exc:
+                        if failure is None:
+                            failure = probe_failure('transaction_rollback', exc)
+                        failure['rollback_failure'] = probe_error('transaction_rollback', exc)
+            if failure is not None:
+                return failure
         phase = 'result_validation'
         return result if valid_time_diagnostic(result) else probe_failure(phase, kind='validation')
     except Exception as exc:
@@ -226,12 +263,18 @@ def future_time_probe(engine, uid, diagnostic, verify_connection):
         return result  # No uniquely identified user: leave observations unknown.
     try:
         with engine.connect() as connection:
-            if verify_connection:
-                verify_connection(connection)
-            count, delta = connection.execute(sa.text(
-                'SELECT COUNT(*),COALESCE(MAX(TIMESTAMPDIFF(MICROSECOND,UTC_TIMESTAMP(6),t.created_at)),0) '
-                'FROM chat_turns t JOIN conversations c ON c.id=t.conversation_id '
-                'WHERE c.user_id=:uid AND t.created_at>UTC_TIMESTAMP(6)'), {'uid': uid}).one()
+            connection.begin()
+            check_probe_connection(connection, engine, True)
+            try:
+                if verify_connection:
+                    verify_connection(connection)
+                count, delta = connection.execute(sa.text(
+                    'SELECT COUNT(*),COALESCE(MAX(TIMESTAMPDIFF(MICROSECOND,UTC_TIMESTAMP(6),t.created_at)),0) '
+                    'FROM chat_turns t JOIN conversations c ON c.id=t.conversation_id '
+                    'WHERE c.user_id=:uid AND t.created_at>UTC_TIMESTAMP(6)'), {'uid': uid}).one()
+            finally:
+                connection.rollback()
+            check_probe_connection(connection, engine, False)
         result['future_rows'] = count if bounded_int(count, 0, 1000000) else None
         result['max_future_us'] = delta if bounded_int(delta, 0, 86400000000) else None
     except Exception:

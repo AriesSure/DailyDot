@@ -1676,7 +1676,7 @@ def test_time_probe_query_failure_rolls_back_without_fabrication():
     connection.__enter__ = Mock(return_value=connection)
     connection.__exit__ = Mock(return_value=False)
     engine = Mock(dialect=SimpleNamespace(name='mysql'))
-    engine.connect.return_value = connection
+    configure_probe_connections(engine, connection)
     session = Mock()
     session.__enter__ = Mock(return_value=session)
     session.__exit__ = Mock(return_value=False)
@@ -1704,7 +1704,7 @@ def test_rollback_precision_probe_offline_sql_roundtrips():
     connection.__exit__ = Mock(return_value=False)
     connection.execute.return_value.scalar_one.return_value = 0
     engine = Mock(dialect=SimpleNamespace(name='mysql'))
-    engine.connect.return_value = connection
+    configure_probe_connections(engine, connection)
     session = Mock()
     session.__enter__ = Mock(return_value=session)
     session.__exit__ = Mock(return_value=False)
@@ -1749,7 +1749,7 @@ def run_probe_stub(failed_phase=None, rollback_fails=False, error=None):
     session.__enter__ = Mock(return_value=session)
     session.__exit__ = Mock(return_value=False)
     engine = Mock(dialect=SimpleNamespace(name='mysql'))
-    engine.connect.return_value = connection
+    residue_connection = configure_probe_connections(engine, connection)
     sql_phases = iter(('server_metadata', 'column_metadata', 'turn_readback_250',
                        'turn_readback_500', 'turn_readback_750'))
     flush_phases = iter(('synthetic_user_insert', 'conversation_insert', 'turn_insert_250',
@@ -1775,7 +1775,8 @@ def run_probe_stub(failed_phase=None, rollback_fails=False, error=None):
             raise error
         return Mock(scalar_one=Mock(return_value=0))
 
-    def verify(connection):
+    def verify(checked):
+        assert checked in (connection, residue_connection) and checked.in_transaction() is True
         if failed_phase == 'connection_identity':
             raise error
 
@@ -1791,9 +1792,11 @@ def run_probe_stub(failed_phase=None, rollback_fails=False, error=None):
             raise error
         return real_validate(value)
 
-    with patch.object(admission_cases, 'Session', return_value=session), patch.object(
+    with patch.object(admission_cases, 'Session', return_value=session) as factory, patch.object(
             admission_cases, 'valid_time_diagnostic', side_effect=validate):
         result = admission_cases.mysql_time_probe(engine, verify)
+    if factory.called:
+        factory.assert_called_once_with(connection)
     return result, session, connection
 
 
@@ -1883,3 +1886,134 @@ def test_failed_precision_probe_cannot_cleanup(catalog):
     with pytest.raises(m.MigrationSafetyError, match='migration_admission_not_verified'):
         run.authorize_cleanup()
     assert not run.cleanup_authorized and not data.drops
+
+
+def configure_probe_connections(engine, connection):
+    """Offline Connection lifecycle stub, not evidence of live MySQL behavior."""
+    residue = Mock()
+    for conn in (connection, residue):
+        conn.__enter__ = Mock(return_value=conn)
+        conn.__exit__ = Mock(return_value=False)
+        conn.engine = engine
+        conn.closed = conn.invalidated = False
+        conn.connection.driver_connection = object()
+        state = {'active': False}
+        conn.in_transaction.side_effect = lambda state=state: state['active']
+        conn.begin.side_effect = lambda state=state: state.update(active=True)
+        conn.rollback.side_effect = lambda state=state: state.update(active=False)
+    residue.execute = connection.execute
+    engine.connect.side_effect = [connection, residue]
+    return residue
+
+
+def test_probe_identity_transaction_and_session_connection_order():
+    # Intercept the existing offline stub to observe actual helper call ordering.
+    original = configure_probe_connections
+    seen = []
+
+    def configure(engine, connection):
+        residue = original(engine, connection)
+        real_rollback = connection.rollback.side_effect
+        connection.rollback.side_effect = lambda: (seen.append('identity_rollback'), real_rollback())[-1]
+        return residue
+
+    with patch(__name__ + '.configure_probe_connections', side_effect=configure):
+        with patch.object(
+                admission_cases, 'check_probe_connection', wraps=admission_cases.check_probe_connection) as check:
+            result, session, connection = run_probe_stub()
+    assert result['verified'] is True
+    assert check.call_args_list[0].args == (connection, connection.engine, True)
+    assert check.call_args_list[1].args == (connection, connection.engine, False)
+    assert check.call_args_list[2].args == (connection, connection.engine, False)
+    assert seen == ['identity_rollback']
+    assert session.flush.call_count == 5
+
+
+@pytest.mark.parametrize('failure', ['identity', 'rollback', 'invalidated', 'still_active', 'physical_changed'])
+def test_identity_failure_never_creates_probe_session(failure):
+    connection = Mock()
+    engine = Mock(dialect=SimpleNamespace(name='mysql'))
+    configure_probe_connections(engine, connection)
+
+    def identity(conn):
+        assert conn is connection and conn.in_transaction() is True
+        if failure == 'identity':
+            raise m.MigrationSafetyError('migration_server_identity_changed')
+        if failure == 'invalidated':
+            conn.invalidated = True
+        if failure == 'physical_changed':
+            conn.connection.driver_connection = object()
+    if failure == 'rollback':
+        connection.rollback.side_effect = RuntimeError(PASSWORD)
+    elif failure == 'still_active':
+        connection.rollback.side_effect = None
+    with patch.object(admission_cases, 'Session') as session:
+        result = admission_cases.mysql_time_probe(engine, identity)
+    assert result['verified'] is False and result['probe_phase'] == 'connection_identity'
+    session.assert_not_called()
+
+
+@pytest.mark.parametrize('failure', [None, 'identity', 'rollback', 'invalidated', 'still_active'])
+def test_future_probe_transaction_contract(failure):
+    connection = Mock()
+    engine = Mock()
+    configure_probe_connections(engine, connection)
+    connection.execute.return_value.one.return_value = (1, 250000)
+
+    def verify(conn):
+        assert conn is connection and conn.in_transaction() is True
+        if failure == 'identity':
+            raise m.MigrationSafetyError('migration_server_identity_changed')
+        if failure == 'invalidated':
+            conn.invalidated = True
+    if failure == 'rollback':
+        connection.rollback.side_effect = RuntimeError(PASSWORD)
+    elif failure == 'still_active':
+        connection.rollback.side_effect = None
+    result = admission_cases.future_time_probe(engine, 1, time_diagnostic(), verify)
+    assert (result['future_rows'], result['max_future_us']) == ((1, 250000) if failure is None else (None, None))
+    connection.rollback.assert_called_once()
+    if failure == 'identity':
+        connection.execute.assert_not_called()
+    assert not connection.commit.called
+
+
+def test_residue_connection_must_be_independent_and_identity_checked():
+    original = configure_probe_connections
+    connections = []
+
+    def configure(engine, connection):
+        residue = original(engine, connection)
+        connections.extend((connection, residue))
+        return residue
+
+    with patch(__name__ + '.configure_probe_connections', side_effect=configure):
+        result, _, _ = run_probe_stub()
+    assert result['verified'] is True
+    assert connections[0] is not connections[1]
+    assert connections[0].connection.driver_connection is not connections[1].connection.driver_connection
+    for connection in connections:
+        assert connection.in_transaction() is False
+        connection.begin.assert_called_once()
+        connection.rollback.assert_called_once()
+        assert not connection.commit.called
+
+
+@pytest.mark.parametrize('change', ['same_physical', 'residue_identity', 'residue_rollback'])
+def test_residue_verification_failure_never_passes(change):
+    original = configure_probe_connections
+
+    def configure(engine, connection):
+        residue = original(engine, connection)
+        if change == 'same_physical':
+            residue.connection.driver_connection = connection.connection.driver_connection
+        elif change == 'residue_identity':
+            residue.invalidated = True
+        else:
+            residue.rollback.side_effect = RuntimeError(PASSWORD)
+        return residue
+
+    with patch(__name__ + '.configure_probe_connections', side_effect=configure):
+        result, _, _ = run_probe_stub()
+    assert not result['verified']
+    assert PASSWORD not in json.dumps(result)
