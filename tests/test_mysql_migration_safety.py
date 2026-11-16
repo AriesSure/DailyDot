@@ -1589,7 +1589,8 @@ def test_schema_substage_is_preserved_without_raw_exception(substage):
 def admission_diagnostic(assertion_id='same_user_one_winner'):
     return {'scenario_id': admission_cases.ASSERTIONS[assertion_id], 'assertion_id': assertion_id,
             'expected': list(admission_cases.EXPECTED[assertion_id]), 'actual': ['agent_admission_unavailable'],
-            'outcome_codes': ['agent_admission_unavailable'], 'time_precision': {'verified': False}}
+            'outcome_codes': ['agent_admission_unavailable'],
+            'time_precision': admission_cases.probe_failure('unknown')}
 
 
 def admission_failure(diagnostic):
@@ -1681,7 +1682,8 @@ def test_time_probe_query_failure_rolls_back_without_fabrication():
     session.__exit__ = Mock(return_value=False)
     session.execute.side_effect = RuntimeError(URL + PASSWORD)
     with patch.object(admission_cases, 'Session', return_value=session):
-        assert admission_cases.mysql_time_probe(engine, None) == {'verified': False}
+        assert admission_cases.mysql_time_probe(engine, None) == admission_cases.probe_failure(
+            'server_metadata', RuntimeError())
     session.rollback.assert_called_once()
 
 
@@ -1734,3 +1736,150 @@ def test_time_probe_sample_fields_strict(field, value):
     diagnostic = time_diagnostic()
     diagnostic['samples'][0][field] = value
     assert not admission_cases.valid_time_diagnostic(diagnostic)
+
+
+def run_probe_stub(failed_phase=None, rollback_fails=False, error=None):
+    """Offline SQL/session response stub, no MySQL connection or rounding claim."""
+    from datetime import datetime
+    error = error or RuntimeError(PASSWORD)
+    connection = Mock()
+    connection.__enter__ = Mock(return_value=connection)
+    connection.__exit__ = Mock(return_value=False)
+    session = Mock()
+    session.__enter__ = Mock(return_value=session)
+    session.__exit__ = Mock(return_value=False)
+    engine = Mock(dialect=SimpleNamespace(name='mysql'))
+    engine.connect.return_value = connection
+    sql_phases = iter(('server_metadata', 'column_metadata', 'turn_readback_250',
+                       'turn_readback_500', 'turn_readback_750'))
+    flush_phases = iter(('synthetic_user_insert', 'conversation_insert', 'turn_insert_250',
+                         'turn_insert_500', 'turn_insert_750'))
+    check_phases = iter(('rollback_user_check', 'rollback_conversation_check'))
+
+    def execute(statement, *args):
+        phase = next(sql_phases)
+        if phase == failed_phase:
+            raise error
+        if phase == 'server_metadata':
+            return Mock(one=Mock(return_value=('8.0.46', '', datetime(2026, 1, 1))))
+        if phase == 'column_metadata':
+            return Mock(scalar_one=Mock(return_value=0))
+        return Mock(one=Mock(return_value=(datetime(2026, 1, 1, 12), 0)))
+
+    def flush():
+        if next(flush_phases) == failed_phase:
+            raise error
+
+    def residue(statement):
+        if next(check_phases) == failed_phase:
+            raise error
+        return Mock(scalar_one=Mock(return_value=0))
+
+    def verify(connection):
+        if failed_phase == 'connection_identity':
+            raise error
+
+    session.execute.side_effect = execute
+    session.flush.side_effect = flush
+    connection.execute.side_effect = residue
+    if rollback_fails or failed_phase == 'transaction_rollback':
+        session.rollback.side_effect = ValueError(PASSWORD)
+    real_validate = admission_cases.valid_time_diagnostic
+
+    def validate(value):
+        if failed_phase == 'result_validation':
+            raise error
+        return real_validate(value)
+
+    with patch.object(admission_cases, 'Session', return_value=session), patch.object(
+            admission_cases, 'valid_time_diagnostic', side_effect=validate):
+        result = admission_cases.mysql_time_probe(engine, verify)
+    return result, session, connection
+
+
+@pytest.mark.parametrize('phase', [p for p in admission_cases.PROBE_PHASES if p != 'unknown'])
+def test_probe_phase_exception_reports_first_failure(phase):
+    result, session, connection = run_probe_stub(phase)
+    assert not result['verified'] and result['probe_phase'] == phase
+    assert admission_cases.valid_time_diagnostic(result)
+    assert PASSWORD not in json.dumps(result)
+    assert result['exception_type'] == ('ValueError' if phase == 'transaction_rollback' else 'RuntimeError')
+    if phase != 'connection_identity':
+        session.rollback.assert_called_once()
+    assert not session.commit.called and not connection.commit.called
+    diagnostic = admission_diagnostic('time_probe_verified')
+    diagnostic['time_precision'] = result
+    assert m.validate_result(admission_failure(diagnostic))['facts']['admission'] == diagnostic
+
+
+def test_primary_and_rollback_failures_are_both_preserved():
+    result, _, _ = run_probe_stub('turn_insert_500', rollback_fails=True)
+    assert result['probe_phase'] == 'turn_insert_500' and result['exception_type'] == 'RuntimeError'
+    assert result['rollback_failure']['probe_phase'] == 'transaction_rollback'
+    assert result['rollback_failure']['exception_type'] == 'ValueError'
+    assert admission_cases.valid_time_diagnostic(result)
+
+
+@pytest.mark.parametrize('errno,state,expected_errno,expected_state', [
+    (1216, '23000', 1216, '23000'), (True, '23000', None, '23000'),
+    (0, 'HY000', None, 'HY000'), (65536, '23000', None, '23000'),
+    (1216, 'secret', 1216, None), (1216, '23!00', 1216, None),
+])
+def test_probe_dbapi_metadata_is_bounded(errno, state, expected_errno, expected_state):
+    error = pymysql.OperationalError(errno, PASSWORD)
+    error.sqlstate = state
+    result, _, _ = run_probe_stub('column_metadata', error=sa.exc.OperationalError('private SQL', {}, error))
+    assert result['failure_kind'] == 'dbapi'
+    assert result['mysql_errno'] == expected_errno and result['sqlstate'] == expected_state
+    assert PASSWORD not in json.dumps(result) and 'private SQL' not in json.dumps(result)
+
+
+def test_probe_unknown_exception_and_phase_are_fixed():
+    class SecretException(Exception):
+        pass
+    result = admission_cases.probe_failure(PASSWORD, SecretException(PASSWORD))
+    assert result['probe_phase'] == 'unknown'
+    assert result['exception_type'] == result['failure_kind'] == 'other'
+    assert PASSWORD not in json.dumps(result)
+
+
+@pytest.mark.parametrize('field,value', [
+    ('probe_phase', 'invalid'), ('failure_kind', 'invalid'), ('exception_type', 'SecretException'),
+    ('mysql_errno', True), ('mysql_errno', 65536), ('sqlstate', 'invalid'),
+    ('sqlstate', '23!00'), ('rollback_failure', {}),
+])
+def test_invalid_probe_error_protocol_rejected(field, value):
+    result = admission_cases.probe_failure('server_metadata', RuntimeError())
+    result[field] = value
+    assert not admission_cases.valid_time_diagnostic(result)
+    diagnostic = admission_diagnostic()
+    diagnostic['time_precision'] = result
+    payload = admission_failure(diagnostic)
+    assert payload['facts'] == {} and payload['error_code'] == 'mysql_forward_migration_failed'
+    payload['facts'] = {'admission': diagnostic}
+    with pytest.raises(m.MigrationSafetyError, match='migration_child_protocol_invalid'):
+        m.validate_result(payload)
+
+
+@pytest.mark.parametrize('change', ['missing', 'extra', 'rollback_extra'])
+def test_probe_error_field_sets_are_exact(change):
+    result = admission_cases.probe_failure('server_metadata')
+    if change == 'missing':
+        del result['exception_type']
+    elif change == 'extra':
+        result['message'] = PASSWORD
+    else:
+        result['rollback_failure'] = {**admission_cases.probe_error('transaction_rollback'), 'message': PASSWORD}
+    assert not admission_cases.valid_time_diagnostic(result)
+
+
+def test_failed_precision_probe_cannot_cleanup(catalog):
+    run, data = catalog
+    result, _, _ = run_probe_stub('turn_readback_750')
+    diagnostic = admission_diagnostic('time_probe_verified')
+    diagnostic['time_precision'] = result
+    assert m.validate_result(admission_failure(diagnostic))['status'] == 'failed'
+    run.admission_verified = False
+    with pytest.raises(m.MigrationSafetyError, match='migration_admission_not_verified'):
+        run.authorize_cleanup()
+    assert not run.cleanup_authorized and not data.drops

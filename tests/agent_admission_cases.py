@@ -51,13 +51,61 @@ def bounded_int(value, low, high):
     return type(value) is int and low <= value <= high
 
 
+PROBE_PHASES = ('unknown', 'connection_identity', 'server_metadata', 'column_metadata',
+                'synthetic_user_insert', 'conversation_insert', 'turn_insert_250', 'turn_readback_250',
+                'turn_insert_500', 'turn_readback_500', 'turn_insert_750', 'turn_readback_750',
+                'transaction_rollback', 'rollback_user_check', 'rollback_conversation_check', 'result_validation')
+FAILURE_KINDS = ('dbapi', 'sqlalchemy', 'identity', 'residue', 'validation', 'other')
+PROBE_EXCEPTIONS = ('IntegrityError', 'OperationalError', 'ProgrammingError', 'DBAPIError',
+                    'SQLAlchemyError', 'MigrationSafetyError', 'RuntimeError', 'ValueError', 'TypeError', 'other')
+
+
+def probe_error(phase, exc=None, kind=None):
+    import pymysql
+    import re
+    dbapi = exc.orig if isinstance(exc, sa.exc.DBAPIError) else exc
+    real_dbapi = isinstance(dbapi, pymysql.MySQLError)
+    errno = dbapi.args[0] if real_dbapi and dbapi.args else None
+    state = getattr(dbapi, 'sqlstate', None) if real_dbapi else None
+    name = type(exc).__name__ if exc is not None else 'other'
+    category = ('dbapi' if real_dbapi else 'sqlalchemy' if isinstance(exc, sa.exc.SQLAlchemyError)
+                else 'identity' if name == 'MigrationSafetyError' else 'other')
+    return {'probe_phase': phase if type(phase) is str and phase in PROBE_PHASES else 'unknown',
+            'failure_kind': kind if kind in FAILURE_KINDS else category,
+            'exception_type': name if name in PROBE_EXCEPTIONS else 'other',
+            'mysql_errno': errno if bounded_int(errno, 1, 65535) else None,
+            'sqlstate': state if type(state) is str and re.fullmatch('[0-9A-Z]{5}', state) else None}
+
+
+def probe_failure(phase, exc=None, kind=None):
+    return {'verified': False, **probe_error(phase, exc, kind), 'rollback_failure': None}
+
+
+def valid_probe_error(value):
+    import re
+    return (type(value) is dict and set(value) == {
+        'probe_phase', 'failure_kind', 'exception_type', 'mysql_errno', 'sqlstate'}
+        and type(value['probe_phase']) is str and value['probe_phase'] in PROBE_PHASES
+        and type(value['failure_kind']) is str and value['failure_kind'] in FAILURE_KINDS
+        and type(value['exception_type']) is str and value['exception_type'] in PROBE_EXCEPTIONS
+        and (value['mysql_errno'] is None or bounded_int(value['mysql_errno'], 1, 65535))
+        and (value['sqlstate'] is None or type(value['sqlstate']) is str
+             and re.fullmatch('[0-9A-Z]{5}', value['sqlstate']) is not None))
+
+
 def valid_time_diagnostic(value):
     if value is None:
         return True  # SQLite has no MySQL precision claim.
     if type(value) is not dict or type(value.get('verified')) is not bool:
         return False
     if not value['verified']:
-        return set(value) == {'verified'}
+        if set(value) != {'verified', 'probe_phase', 'failure_kind', 'exception_type',
+                          'mysql_errno', 'sqlstate', 'rollback_failure'}:
+            return False
+        error = {key: value[key] for key in value if key not in ('verified', 'rollback_failure')}
+        rollback = value['rollback_failure']
+        return (valid_probe_error(error) and (rollback is None or valid_probe_error(rollback)
+                and rollback['probe_phase'] == 'transaction_rollback'))
     if set(value) != {'verified', 'server_version', 'truncate_fractional', 'datetime_precision',
                       'utc_microsecond', 'samples', 'future_rows', 'max_future_us'}:
         return False
@@ -96,6 +144,8 @@ def mysql_time_probe(engine, verify_connection):
     if engine.dialect.name != 'mysql':
         return None
     uid = cid = None
+    phase = 'connection_identity'
+    failure = None
     try:
         with engine.connect() as connection:
             if verify_connection:
@@ -103,52 +153,73 @@ def mysql_time_probe(engine, verify_connection):
             connection.rollback()
             with Session(connection) as session:
                 try:
+                    phase = 'server_metadata'
                     version, mode, now = session.execute(sa.text(
                         'SELECT VERSION(),@@SESSION.sql_mode,UTC_TIMESTAMP(6)')).one()
+                    phase = 'column_metadata'
                     precision = session.execute(sa.text(
                         "SELECT DATETIME_PRECISION FROM information_schema.COLUMNS "
                         "WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='chat_turns' "
                         "AND COLUMN_NAME='created_at'")).scalar_one()
+                    phase = 'synthetic_user_insert'
                     user = User(username=uuid4().hex, email=uuid4().hex + '@example.invalid')
                     session.add(user)
                     session.flush()
                     uid = user.id
+                    phase = 'conversation_insert'
                     convo = Conversation(user_id=uid)
                     session.add(convo)
                     session.flush()
                     cid = convo.id
                     samples = []
                     for i, microsecond in enumerate((250000, 500000, 750000), 1):
+                        phase = ('turn_insert_250', 'turn_insert_500', 'turn_insert_750')[i - 1]
                         stamp = datetime(2026, 1, 1, 12, 0, 0, microsecond)
                         row = ChatTurn(conversation_id=cid, turn_no=i, client_request_id=uuid4().hex,
                                        request_digest='a' * 64, created_at=stamp)
                         session.add(row)
                         session.flush()
+                        phase = ('turn_readback_250', 'turn_readback_500', 'turn_readback_750')[i - 1]
                         actual, greater = session.execute(sa.text(
                             'SELECT created_at,created_at > :stamp FROM chat_turns WHERE id=:id'),
                             {'stamp': stamp, 'id': row.id}).one()
                         samples.append({'input_us': microsecond, 'read_us': actual.microsecond,
                                         'delta_us': int((actual - stamp).total_seconds() * 1000000),
                                         'greater_than_input': bool(greater)})
+                    phase = 'result_validation'
                     result = {'verified': True, 'server_version': version,
                               'truncate_fractional': 'TIME_TRUNCATE_FRACTIONAL' in mode.split(','),
                               'datetime_precision': precision, 'utc_microsecond': now.microsecond,
                               'samples': samples, 'future_rows': None, 'max_future_us': None}
+                except Exception as exc:
+                    failure = probe_failure(phase, exc)
                 finally:
-                    session.rollback()
+                    phase = 'transaction_rollback'
+                    try:
+                        session.rollback()
+                    except Exception as exc:
+                        rollback = probe_error(phase, exc)
+                        if failure is None:
+                            failure = probe_failure(phase, exc)
+                        failure['rollback_failure'] = rollback
+            if failure is not None:
+                return failure
             # Rollback must be observable from a fresh read transaction.
+            phase = 'rollback_user_check'
             if connection.execute(sa.select(sa.func.count()).select_from(User).where(User.id == uid)).scalar_one():
-                return {'verified': False}
+                return probe_failure(phase, kind='residue')
+            phase = 'rollback_conversation_check'
             if connection.execute(sa.select(sa.func.count()).select_from(Conversation).where(
                     Conversation.id == cid)).scalar_one():
-                return {'verified': False}
-        return result if valid_time_diagnostic(result) else {'verified': False}
-    except Exception:
-        return {'verified': False}
+                return probe_failure(phase, kind='residue')
+        phase = 'result_validation'
+        return result if valid_time_diagnostic(result) else probe_failure(phase, kind='validation')
+    except Exception as exc:
+        return failure if failure is not None else probe_failure(phase, exc)
 
 
 def future_time_probe(engine, uid, diagnostic, verify_connection):
-    if diagnostic is None or diagnostic == {'verified': False}:
+    if diagnostic is None or diagnostic.get('verified') is False:
         return diagnostic
     result = dict(diagnostic)
     if uid is None:
