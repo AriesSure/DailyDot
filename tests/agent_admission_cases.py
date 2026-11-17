@@ -1,8 +1,8 @@
 """Shared real-connection scenarios for owned SQLite and fixed MySQL CI only."""
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
 from datetime import datetime, timedelta
 import hashlib
-from threading import Barrier
+from threading import Barrier, Lock
 from uuid import uuid4
 
 from flask_login import login_user
@@ -126,9 +126,133 @@ def valid_time_diagnostic(value):
         for row, expected in zip(samples, (250000, 500000, 750000))))
 
 
+WORKER_IDS = ('left', 'right')
+WORKER_STAGES = ('unknown', 'request_context', 'login', 'connect', 'connection_id', 'identity',
+                 'identity_rollback', 'barrier', 'session', 'begin', 'commit', 'rollback_probe',
+                 'session_close', 'connection_close', 'request_close', 'done')
+WORKER_EXCEPTIONS = PROBE_EXCEPTIONS + ('BrokenBarrierError', 'CancelledError', 'TimeoutError',
+                                        'ConversationError', 'InvalidRequestError', 'PendingRollbackError',
+                                        'ResourceClosedError', 'DetachedInstanceError', 'StatementError')
+
+
+class WorkerTrace:
+    """Per-worker diagnostic metadata only; this lock never controls admission."""
+    def __init__(self, worker_id):
+        if worker_id not in WORKER_IDS:
+            raise ValueError('invalid_worker_id')
+        self.worker_id = worker_id
+        self._stage = 'unknown'
+        self._lock = Lock()
+
+    def mark(self, stage):
+        with self._lock:
+            self._stage = stage if stage in WORKER_STAGES else 'unknown'
+
+    def stage(self):
+        with self._lock:
+            return self._stage
+
+
+def wait_original(futures):
+    """Keep the old per-Future 40s wait until first error; executor still joins.
+
+    Subsequent inspection is separate and never waits. In particular, do not add
+    another 40s wait for a peer after the first error or invent a total deadline.
+    """
+    timed_out = {}
+    for future, trace in futures.items():
+        try:
+            future.result(timeout=40)
+        except FutureTimeoutError as exc:
+            # Completion may race with timeout reporting. A worker-raised
+            # TimeoutError is the exact exception stored on a completed Future.
+            worker_timeout = False
+            if future.done() and not future.cancelled():
+                worker_timeout = future.exception(timeout=0) is exc
+            if not worker_timeout:
+                timed_out[trace.worker_id] = trace.stage()
+            break
+        except Exception:
+            break
+    return timed_out
+
+
+def worker_error(exc):
+    value = probe_error('unknown', exc)
+    value.pop('probe_phase')
+    name = type(exc).__name__
+    value['exception_type'] = name if name in WORKER_EXCEPTIONS else 'other'
+    return value
+
+
+def collect_futures(futures, timed_out):
+    """Inspect every submitted Future, zero extra wait, no ordering-based blame."""
+    records, values = [], {}
+    for future, trace in futures.items():
+        finished = future.done()
+        row = {'worker_id': trace.worker_id, 'stage': trace.stage(),
+               'wait_stage': timed_out.get(trace.worker_id), 'finished': finished,
+               'status': 'pending', 'outcome': 'other', 'error': None}
+        if future.cancelled():
+            row['status'] = 'cancelled'
+        elif finished:
+            try:
+                value = future.result(timeout=0)
+                values[trace.worker_id] = value
+                row['outcome'] = outcome(value[1])
+                row['status'] = 'completed'
+            except Exception as exc:
+                row['status'], row['error'] = 'failed', worker_error(exc)
+        if trace.worker_id in timed_out:
+            row['status'] = 'timeout'  # Never turn a missed wait into success.
+        records.append(row)
+    return sorted(records, key=lambda row: row['worker_id']), values
+
+
+def valid_workers(rows):
+    if type(rows) is not list or len(rows) != 2:
+        return False
+    ids = []
+    for row in rows:
+        if type(row) is not dict or set(row) != {
+                'worker_id', 'stage', 'wait_stage', 'finished', 'status', 'outcome', 'error'}:
+            return False
+        if not (type(row['worker_id']) is str and row['worker_id'] in WORKER_IDS
+                and type(row['stage']) is str and row['stage'] in WORKER_STAGES
+                and (row['wait_stage'] is None or type(row['wait_stage']) is str
+                     and row['wait_stage'] in WORKER_STAGES)
+                and type(row['finished']) is bool and type(row['status']) is str and row['status'] in (
+                    'completed', 'failed', 'pending', 'timeout', 'cancelled')
+                and type(row['outcome']) is str and row['outcome'] in OUTCOMES):
+            return False
+        if row['status'] in ('completed', 'failed', 'cancelled') and not row['finished']:
+            return False
+        if row['status'] == 'pending' and row['finished']:
+            return False
+        if (row['status'] == 'timeout') != (row['wait_stage'] is not None):
+            return False
+        if row['error'] is not None:
+            error = row['error']
+            if type(error) is not dict or set(error) != {
+                    'exception_type', 'failure_kind', 'mysql_errno', 'sqlstate'}:
+                return False
+            if type(error['exception_type']) is not str or error['exception_type'] not in WORKER_EXCEPTIONS:
+                return False
+            safe = {**error, 'exception_type': 'other', 'probe_phase': 'unknown'}
+            if not valid_probe_error(safe) or row['status'] not in ('failed', 'timeout') or not row['finished']:
+                return False
+        elif row['status'] == 'failed':
+            return False
+        if ((not row['finished'] or row['error'] is not None or row['status'] == 'cancelled')
+                and row['outcome'] != 'other'):
+            return False
+        ids.append(row['worker_id'])
+    return sorted(ids) == list(WORKER_IDS) and any(row['status'] != 'completed' for row in rows)
+
+
 def valid_admission_diagnostic(value):
-    if type(value) is not dict or set(value) != {
-            'scenario_id', 'assertion_id', 'expected', 'actual', 'outcome_codes', 'time_precision'}:
+    fields = {'scenario_id', 'assertion_id', 'expected', 'actual', 'outcome_codes', 'time_precision'}
+    if type(value) is not dict or set(value) not in (fields, fields | {'workers'}):
         return False
     key = value['assertion_id']
     return (type(key) is str and key in ASSERTIONS and value['scenario_id'] == ASSERTIONS[key]
@@ -136,7 +260,9 @@ def valid_admission_diagnostic(value):
                     and all(type(v) is str and v in OUTCOMES for v in value[k])
                     for k in ('expected', 'actual', 'outcome_codes'))
             and value['expected'] == EXPECTED[key] and value['time_precision'] is not None
-            and valid_time_diagnostic(value['time_precision']))
+            and valid_time_diagnostic(value['time_precision'])
+            and ('workers' not in value or valid_workers(value['workers'])
+                 and value['actual'] == value['outcome_codes'] == [r['outcome'] for r in value['workers']]))
 
 
 def check_probe_connection(connection, engine, active):
@@ -315,33 +441,64 @@ def verify_concurrency(application, engine, *, verify_connection=None):
             session.flush()
             return users, [row.id for row in conversations]
 
-    def attempt(user, cid, rid, barrier=None, *, rollback=False):
+    def attempt(user, cid, rid, barrier=None, *, rollback=False, trace=None):
+        def mark(stage):
+            if trace is not None:
+                trace.mark(stage)
+        mark('request_context')
         with application.test_request_context():
+            mark('login')
             login_user(user)
+            mark('connect')
             with engine.connect() as connection:
+                mark('connection_id')
                 identifier = (connection.execute(sa.text('SELECT CONNECTION_ID()')).scalar_one()
                               if engine.dialect.name == 'mysql' else id(connection.connection.driver_connection))
+                mark('identity')
                 if verify_connection:
                     verify_connection(connection)
+                mark('identity_rollback')
                 connection.rollback()
                 if barrier:
+                    mark('barrier')
                     barrier.wait(timeout=20)
                 try:
+                    mark('session')
                     with Session(connection, expire_on_commit=False) as session:
+                        mark('begin')
                         with session.begin():
                             result = c._begin_with_session(
                                 session, user.id, cid, rid, 'question', digest, admitted=True)
                             if rollback:
+                                mark('rollback_probe')
                                 raise RuntimeError('synthetic_transaction_rollback')
-                    return identifier, result['created']
+                            mark('commit')
+                        mark('session_close')
+                    value = result['created']
                 except c.ConversationError as exc:
-                    return identifier, exc.args[0]
+                    value = exc.args[0]
+                mark('connection_close')
+            mark('request_close')
+        mark('done')
+        return identifier, value
 
-    def race(jobs):
+    def race(jobs, assertion_id):
         barrier = Barrier(len(jobs))
         with ThreadPoolExecutor(len(jobs)) as executor:
-            futures = [executor.submit(attempt, *job, barrier) for job in jobs]
-            values = [future.result(timeout=40) for future in futures]
+            futures = {}
+            for worker_id, job in jobs.items():
+                trace = WorkerTrace(worker_id)
+                futures[executor.submit(attempt, *job, barrier, trace=trace)] = trace
+            timed_out = wait_original(futures)
+        # The original executor exit already joins all workers; no new wait here.
+        workers, results = collect_futures(futures, timed_out)
+        if any(row['status'] != 'completed' for row in workers):
+            codes = [row['outcome'] for row in workers]
+            raise AdmissionDiagnosticError({
+                'scenario_id': ASSERTIONS[assertion_id], 'assertion_id': assertion_id,
+                'expected': EXPECTED[assertion_id], 'actual': codes, 'outcome_codes': codes,
+                'time_precision': precision, 'workers': workers})
+        values = [results[worker_id] for worker_id in jobs]
         check(len({row[0] for row in values}) == len(jobs), 'independent_connections',
               [len({row[0] for row in values}) == len(jobs)], ['created'])
         physical.update(row[0] for row in values)
@@ -359,7 +516,8 @@ def verify_concurrency(application, engine, *, verify_connection=None):
         session.flush()
         ids.append(other.id)
     requests = [uuid4().hex, uuid4().hex]
-    outcomes = race([(users[0], ids[i], requests[i]) for i in range(2)])
+    outcomes = race({'left': (users[0], ids[0], requests[0]),
+                     'right': (users[0], ids[1], requests[1])}, 'same_user_one_winner')
     check(outcomes.count(True) == 1 and outcomes.count('agent_user_busy') == 1,
           'same_user_one_winner', outcomes, ['created', 'agent_user_busy'], users[0].id)
     for i, outcome in enumerate(outcomes):
@@ -372,7 +530,8 @@ def verify_concurrency(application, engine, *, verify_connection=None):
     check(value is True, 'global_initial_allowed', [value], ['created'], users[0].id)
     # The first request is still pending, yet its gate transaction is over:
     # two independent connections can compete for the remaining global slot.
-    outcomes = race([(users[i], ids[i], requests[i]) for i in (1, 2)])
+    outcomes = race({'left': (users[1], ids[1], requests[1]),
+                     'right': (users[2], ids[2], requests[2])}, 'global_capacity_one_winner')
     check(any(v is True or v == 'agent_global_capacity' for v in outcomes),
           'gate_released', outcomes, ['created'], users[0].id)
     check(outcomes.count(True) == 1 and outcomes.count('agent_global_capacity') == 1,
@@ -384,7 +543,8 @@ def verify_concurrency(application, engine, *, verify_connection=None):
 
     users, ids = scenario_users(1)
     rid = uuid4().hex
-    outcomes = race([(users[0], ids[0], rid)] * 2)
+    outcomes = race({'left': (users[0], ids[0], rid), 'right': (users[0], ids[0], rid)},
+                    'duplicate_idempotency')
     check(outcomes.count(False) == 1 and outcomes.count(True) == 1, 'duplicate_idempotency',
           outcomes, ['duplicate', 'created'], users[0].id)
     finish(users[0], ids[0], rid)
@@ -398,7 +558,8 @@ def verify_concurrency(application, engine, *, verify_connection=None):
         check(value is True, 'minute_initial_allowed', [value], ['created'], users[0].id)
         finish(users[0], ids[0], rid)
     requests = [uuid4().hex, uuid4().hex]
-    outcomes = race([(users[0], ids[0], rid) for rid in requests])
+    outcomes = race({'left': (users[0], ids[0], requests[0]),
+                     'right': (users[0], ids[0], requests[1])}, 'minute_window_one_winner')
     check(outcomes.count(True) == 1, 'minute_window_one_winner', outcomes, ['created'], users[0].id)
     # The competing request may see the pending owner first; after finishing,
     # the same rejected ID must be refused by the rolling frequency limit.
@@ -431,7 +592,8 @@ def verify_concurrency(application, engine, *, verify_connection=None):
                                 .order_by(ChatTurn.created_at).limit(1))
         oldest.created_at = admission.database_utc(session) - timedelta(seconds=3600)
     requests = [uuid4().hex, uuid4().hex]
-    outcomes = race([(users[0], ids[0], rid) for rid in requests])
+    outcomes = race({'left': (users[0], ids[0], requests[0]),
+                     'right': (users[0], ids[0], requests[1])}, 'hour_window_one_winner')
     check(outcomes.count(True) == 1, 'hour_window_one_winner', outcomes, ['created'], users[0].id)
     winner = outcomes.index(True)
     finish(users[0], ids[0], requests[winner])

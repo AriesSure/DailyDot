@@ -1000,7 +1000,7 @@ def safe_failure(exc, run):
     if (type(exc) is AdmissionDiagnosticError and stage == 'crud' and substage == 'admission_concurrency'
             and valid_admission_diagnostic(exc.diagnostic)):
         code = 'migration_admission_assertion_failed'
-        facts = {'admission': exc.diagnostic}
+        facts = {'admission': dict(exc.diagnostic)}  # Validated worker records stay in the existing protocol.
     if stage == 'crud' and substage == 'card_foreign_key' and valid_card_facts(run.card_probe):
         facts = {'card_foreign_key': dict(run.card_probe)}
     if stage == 'crud' and substage in ('chat_role_check', 'chat_status_check'):

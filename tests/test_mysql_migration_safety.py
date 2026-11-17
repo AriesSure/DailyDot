@@ -2017,3 +2017,306 @@ def test_residue_verification_failure_never_passes(change):
         result, _, _ = run_probe_stub()
     assert not result['verified']
     assert PASSWORD not in json.dumps(result)
+
+
+# Deterministic Future collection tests: no database or scheduler sleeps.
+def future_case(worker_id, stage, *, value=None, error=None, cancelled=False, pending=False):
+    from concurrent.futures import Future, TimeoutError as FutureTimeoutError
+
+    class ControlledFuture(Future):
+        def result(self, timeout=None):
+            if not self.done():
+                assert timeout == 40
+                raise FutureTimeoutError()
+            return super().result(timeout=0)
+    future = ControlledFuture()
+    trace = admission_cases.WorkerTrace(worker_id)
+    trace.mark(stage)
+    if cancelled:
+        future.cancel()
+    elif error is not None:
+        future.set_exception(error)
+    elif not pending:
+        future.set_result(value)
+    return future, trace
+
+
+def worker_payload(rows):
+    diagnostic = admission_diagnostic('same_user_one_winner')
+    diagnostic['workers'] = rows
+    diagnostic['actual'] = diagnostic['outcome_codes'] = [row['outcome'] for row in rows]
+    return admission_failure(diagnostic)
+
+
+@pytest.mark.parametrize('reverse', [False, True])
+def test_future_collection_preserves_both_errors_and_worker_identity(reverse):
+    from threading import BrokenBarrierError
+    pairs = [future_case('left', 'barrier', error=BrokenBarrierError()),
+             future_case('right', 'identity', error=m.MigrationSafetyError('migration_server_identity_changed'))]
+    if reverse:
+        pairs.reverse()
+    futures = dict(pairs)
+    timed_out = admission_cases.wait_original(futures)
+    rows, values = admission_cases.collect_futures(futures, timed_out)
+    assert values == {} and timed_out == {}
+    assert [(r['worker_id'], r['stage'], r['error']['exception_type']) for r in rows] == [
+        ('left', 'barrier', 'BrokenBarrierError'), ('right', 'identity', 'MigrationSafetyError')]
+    assert m.validate_result(json.loads(json.dumps(worker_payload(rows))))['facts']['admission']['workers'] == rows
+
+
+def test_future_collection_keeps_success_beside_error():
+    futures = dict([future_case('left', 'done', value=(123, True)),
+                    future_case('right', 'begin', error=sa.exc.InvalidRequestError(PASSWORD))])
+    rows, values = admission_cases.collect_futures(futures, admission_cases.wait_original(futures))
+    assert values == {'left': (123, True)}
+    assert rows[0]['status'] == 'completed' and rows[0]['outcome'] == 'created'
+    assert rows[1]['status'] == 'failed' and rows[1]['error']['exception_type'] == 'InvalidRequestError'
+    assert PASSWORD not in json.dumps(worker_payload(rows))
+
+
+def test_future_collection_success_preserves_original_values():
+    pairs = [future_case('right', 'done', value=(789, False)), future_case('left', 'done', value=(123, True))]
+    futures = dict(pairs)
+    timeouts = admission_cases.wait_original(futures)
+    rows, values = admission_cases.collect_futures(futures, timeouts)
+    assert timeouts == {} and all(row['status'] == 'completed' for row in rows)
+    assert [values[trace.worker_id] for trace in futures.values()] == [(789, False), (123, True)]
+    assert all(row['error'] is None for row in rows)
+
+
+def test_future_collection_unknown_exception_is_sanitized():
+    class PrivateException(Exception):
+        pass
+    futures = dict([future_case('left', 'connect', error=PrivateException(PASSWORD, URL)),
+                    future_case('right', 'done', value=(456, True))])
+    rows, _ = admission_cases.collect_futures(futures, admission_cases.wait_original(futures))
+    payload = m.validate_result(worker_payload(rows))
+    assert rows[0]['error']['exception_type'] == 'other'
+    assert not any(secret in json.dumps(payload) for secret in (PASSWORD, URL, 'PrivateException', 'Traceback'))
+
+
+def test_future_timeout_keeps_peer_result_and_unfinished_state():
+    futures = dict([future_case('left', 'barrier', pending=True),
+                    future_case('right', 'done', value=(456, True))])
+    timeouts = admission_cases.wait_original(futures)
+    rows, values = admission_cases.collect_futures(futures, timeouts)
+    assert timeouts == {'left': 'barrier'} and values == {'right': (456, True)}
+    assert rows[0]['status'] == 'timeout' and rows[0]['finished'] is False
+    assert rows[0]['wait_stage'] == 'barrier' and not next(iter(futures)).done()
+    assert m.validate_result(worker_payload(rows))['status'] == 'failed'
+
+
+def test_future_timeout_is_not_reclassified_as_success_after_completion():
+    pairs = [future_case('left', 'begin', pending=True), future_case('right', 'done', value=(456, True))]
+    futures = dict(pairs)
+    timeouts = admission_cases.wait_original(futures)
+    pairs[0][0].set_result((123, True))
+    pairs[0][1].mark('done')
+    rows, values = admission_cases.collect_futures(futures, timeouts)
+    assert values['left'] == (123, True)
+    assert rows[0]['status'] == 'timeout' and rows[0]['finished'] is True
+    assert rows[0]['stage'] == 'done' and rows[0]['wait_stage'] == 'begin'
+    assert m.validate_result(worker_payload(rows))['status'] == 'failed'
+
+
+def test_future_cancelled_and_pending_are_distinct():
+    futures = dict([future_case('left', 'login', cancelled=True), future_case('right', 'connect', pending=True)])
+    rows, values = admission_cases.collect_futures(futures, admission_cases.wait_original(futures))
+    assert values == {}
+    assert rows[0]['status'] == 'cancelled' and rows[0]['finished'] is True
+    assert rows[1]['status'] == 'pending' and rows[1]['finished'] is False
+    assert m.validate_result(worker_payload(rows))['status'] == 'failed'
+
+
+def test_future_worker_timeout_exception_is_not_collection_timeout():
+    futures = dict([future_case('left', 'connect', error=TimeoutError(PASSWORD)),
+                    future_case('right', 'done', value=(456, True))])
+    timed_out = admission_cases.wait_original(futures)
+    rows, _ = admission_cases.collect_futures(futures, timed_out)
+    assert timed_out == {} and rows[0]['status'] == 'failed'
+    assert rows[0]['error']['exception_type'] == 'TimeoutError'
+
+
+@pytest.mark.parametrize('pending', [False, True])
+def test_future_failure_or_timeout_never_grants_cleanup(catalog, pending):
+    run, data = catalog
+    futures = dict([future_case('left', 'begin', pending=pending,
+                                error=None if pending else RuntimeError(PASSWORD)),
+                    future_case('right', 'done', value=(456, True))])
+    rows, _ = admission_cases.collect_futures(futures, admission_cases.wait_original(futures))
+    assert m.validate_result(worker_payload(rows))['status'] == 'failed'
+    run.admission_verified = False
+    with pytest.raises(m.MigrationSafetyError, match='migration_admission_not_verified'):
+        run.authorize_cleanup()
+    assert not run.cleanup_authorized and not data.drops
+
+
+@pytest.mark.parametrize('mutation', ['id', 'stage', 'type', 'extra', 'missing', 'bool_errno', 'sqlstate'])
+def test_future_worker_protocol_is_strict(mutation):
+    futures = dict([future_case('left', 'begin', error=ValueError(PASSWORD)),
+                    future_case('right', 'done', value=(456, True))])
+    rows, _ = admission_cases.collect_futures(futures, {})
+    if mutation == 'id':
+        rows[0]['worker_id'] = 'unknown'
+    elif mutation == 'stage':
+        rows[0]['stage'] = URL
+    elif mutation == 'type':
+        rows[0]['error']['exception_type'] = 'PrivateException'
+    elif mutation == 'extra':
+        rows[0]['message'] = PASSWORD
+    elif mutation == 'missing':
+        del rows[0]['finished']
+    elif mutation == 'bool_errno':
+        rows[0]['error']['mysql_errno'] = True
+    else:
+        rows[0]['error']['sqlstate'] = PASSWORD
+    assert not admission_cases.valid_workers(rows)
+    assert worker_payload(rows)['facts'] == {}
+
+
+def test_original_seventeen_assertion_ids_are_unchanged():
+    assert admission_cases.ASSERTIONS == {
+        'independent_connections': 'connections', 'same_user_one_winner': 'same_user',
+        'global_initial_allowed': 'global', 'global_capacity_one_winner': 'global',
+        'duplicate_idempotency': 'duplicate', 'minute_initial_allowed': 'minute',
+        'minute_window_one_winner': 'minute', 'minute_window_retry': 'minute',
+        'hour_window_initial_limit': 'hour', 'hour_window_one_winner': 'hour', 'hour_window_retry': 'hour',
+        'rollback_observed': 'rollback', 'rollback_no_turn': 'rollback', 'rollback_no_active': 'rollback',
+        'rollback_retry_allowed': 'rollback', 'gate_released': 'global', 'time_probe_verified': 'time'}
+
+
+def test_future_timeout_completion_race_still_records_missed_wait():
+    from concurrent.futures import Future, TimeoutError as FutureTimeoutError
+
+    class CompletingFuture(Future):
+        def result(self, timeout=None):
+            if not self.done():
+                assert timeout == 40
+                self.set_result((123, True))
+                raise FutureTimeoutError()
+            return super().result(timeout=0)
+    future = CompletingFuture()
+    trace = admission_cases.WorkerTrace('left')
+    trace.mark('commit')
+    futures = {future: trace, **dict([future_case('right', 'done', value=(456, True))])}
+    timed_out = admission_cases.wait_original(futures)
+    rows, _ = admission_cases.collect_futures(futures, timed_out)
+    assert rows[0]['status'] == 'timeout' and rows[0]['finished'] is True
+    assert m.validate_result(worker_payload(rows))['status'] == 'failed'
+
+
+def test_future_wait_policy_adds_no_peer_wait_after_first_failure():
+    from threading import BrokenBarrierError
+    left, a = future_case('left', 'barrier', error=BrokenBarrierError())
+    right, b = future_case('right', 'identity', error=m.MigrationSafetyError('migration_server_identity_changed'))
+    left, right = Mock(wraps=left), Mock(wraps=right)
+    futures = {left: a, right: b}
+    timed_out = admission_cases.wait_original(futures)
+    rows, _ = admission_cases.collect_futures(futures, timed_out)
+    assert len(rows) == 2
+    assert [call.kwargs['timeout'] for call in left.result.call_args_list] == [40, 0]
+    assert [call.kwargs['timeout'] for call in right.result.call_args_list] == [0]
+
+
+@pytest.mark.parametrize('errno,state,expected_errno,expected_state', [
+    (1216, '23000', 1216, '23000'), (65536, 'invalid', None, None)])
+def test_future_database_exception_uses_safe_driver_metadata(errno, state, expected_errno, expected_state):
+    error = pymysql.OperationalError(errno, PASSWORD)
+    error.sqlstate = state
+    exception = sa.exc.OperationalError('private SQL', {'secret': PASSWORD}, error)
+    futures = dict([future_case('left', 'commit', error=exception),
+                    future_case('right', 'done', value=(456, True))])
+    rows, _ = admission_cases.collect_futures(futures, admission_cases.wait_original(futures))
+    value = m.validate_result(worker_payload(rows))
+    assert rows[0]['error']['mysql_errno'] == expected_errno
+    assert rows[0]['error']['sqlstate'] == expected_state
+    assert PASSWORD not in json.dumps(value) and 'private SQL' not in json.dumps(value)
+
+
+@pytest.mark.parametrize('change', ['not_list', 'length', 'row_type', 'not_finished', 'pending_done',
+                                    'timeout_stage', 'error_fields', 'error_kind', 'missing_error',
+                                    'unfinished_outcome', 'duplicate_id'])
+def test_future_worker_state_consistency_rejects_invalid_facts(change):
+    futures = dict([future_case('left', 'begin', error=ValueError()),
+                    future_case('right', 'done', value=(456, True))])
+    rows, _ = admission_cases.collect_futures(futures, {})
+    if change == 'not_list':
+        rows = tuple(rows)
+    elif change == 'length':
+        rows.pop()
+    elif change == 'row_type':
+        rows[0] = None
+    elif change == 'not_finished':
+        rows[0]['finished'] = False
+    elif change == 'pending_done':
+        rows[0].update(status='pending', error=None)
+    elif change == 'timeout_stage':
+        rows[0]['wait_stage'] = 'begin'
+    elif change == 'error_fields':
+        rows[0]['error']['message'] = PASSWORD
+    elif change == 'error_kind':
+        rows[0]['error']['failure_kind'] = 'unknown'
+    elif change == 'missing_error':
+        rows[0]['error'] = None
+    elif change == 'unfinished_outcome':
+        rows[0].update(status='pending', error=None, finished=False, outcome='created')
+    else:
+        rows[1]['worker_id'] = 'left'
+    assert not admission_cases.valid_workers(rows)
+
+
+def test_future_trace_rejects_unknown_worker_id():
+    with pytest.raises(ValueError, match='invalid_worker_id'):
+        admission_cases.WorkerTrace('unknown')
+
+
+def test_future_actual_worker_stage_on_identity_failure_with_owned_sqlite():
+    # Real worker/attempt path on owned file SQLite, not a MySQL compatibility claim.
+    from tests.test_database_migrations import FLOW
+    from tests.test_migration_validation import child
+    child(FLOW + """
+from tests.agent_admission_cases import verify_concurrency, AdmissionDiagnosticError
+from tests.mysql_migration_ci import MigrationSafetyError
+with v.create_temporary_sqlite_target() as target, v.SQLiteBoundary(target):
+    app=v.create_minimal_migration_app(target)
+    v.run_alembic_upgrade(target,app)
+    def reject(connection):
+        raise MigrationSafetyError('migration_server_identity_changed')
+    with app.app_context():
+        try:
+            verify_concurrency(app,db.engine,verify_connection=reject)
+        except AdmissionDiagnosticError as error:
+            workers=error.diagnostic['workers']
+            assert {row['worker_id'] for row in workers}=={'left','right'}
+            assert all(row['stage']=='identity' and row['status']=='failed' for row in workers)
+            assert all(row['error']['exception_type']=='MigrationSafetyError' for row in workers)
+        else:
+            raise AssertionError('worker failure swallowed')
+""")
+
+
+@pytest.mark.parametrize('system_type', [KeyboardInterrupt, SystemExit, GeneratorExit])
+@pytest.mark.parametrize('operation', ['wait', 'collect'])
+def test_future_system_exceptions_propagate_unchanged(system_type, operation):
+    exception = system_type()
+    futures = dict([future_case('left', 'begin', error=exception),
+                    future_case('right', 'done', value=(456, True))])
+    with pytest.raises(system_type) as raised:
+        if operation == 'wait':
+            admission_cases.wait_original(futures)
+        else:
+            admission_cases.collect_futures(futures, {})
+    assert raised.value is exception
+
+
+def test_future_ordinary_unknown_exception_still_collects_both_workers():
+    class PrivateFailure(Exception):
+        pass
+    futures = dict([future_case('left', 'commit', error=PrivateFailure(PASSWORD, URL)),
+                    future_case('right', 'done', value=(456, True))])
+    rows, values = admission_cases.collect_futures(futures, admission_cases.wait_original(futures))
+    assert values == {'right': (456, True)}
+    assert rows[0]['status'] == 'failed' and rows[0]['error']['exception_type'] == 'other'
+    assert rows[1]['status'] == 'completed' and rows[1]['outcome'] == 'created'
+    payload = m.validate_result(worker_payload(rows))
+    assert not any(secret in json.dumps(payload) for secret in (PASSWORD, URL, 'PrivateFailure', 'Traceback'))
