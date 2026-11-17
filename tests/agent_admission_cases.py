@@ -520,8 +520,8 @@ def verify_concurrency(application, engine, *, verify_connection=None):
                      'right': (users[0], ids[1], requests[1])}, 'same_user_one_winner')
     check(outcomes.count(True) == 1 and outcomes.count('agent_user_busy') == 1,
           'same_user_one_winner', outcomes, ['created', 'agent_user_busy'], users[0].id)
-    for i, outcome in enumerate(outcomes):
-        if outcome is True:
+    for i, race_outcome in enumerate(outcomes):
+        if race_outcome is True:
             finish(users[0], ids[i], requests[i])
 
     users, ids = scenario_users(3)
@@ -537,8 +537,8 @@ def verify_concurrency(application, engine, *, verify_connection=None):
     check(outcomes.count(True) == 1 and outcomes.count('agent_global_capacity') == 1,
           'global_capacity_one_winner', outcomes, ['created', 'agent_global_capacity'], users[0].id)
     finish(users[0], ids[0], requests[0])
-    for i, outcome in zip((1, 2), outcomes):
-        if outcome is True:
+    for i, race_outcome in zip((1, 2), outcomes):
+        if race_outcome is True:
             finish(users[i], ids[i], requests[i])
 
     users, ids = scenario_users(1)

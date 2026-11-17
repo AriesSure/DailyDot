@@ -2320,3 +2320,92 @@ def test_future_ordinary_unknown_exception_still_collects_both_workers():
     assert rows[1]['status'] == 'completed' and rows[1]['outcome'] == 'created'
     payload = m.validate_result(worker_payload(rows))
     assert not any(secret in json.dumps(payload) for secret in (PASSWORD, URL, 'PrivateFailure', 'Traceback'))
+
+
+@pytest.mark.parametrize('failure_point,assertion_id,scenario,codes', [
+    ('before_loop', 'same_user_one_winner', 'same_user', ['created', 'created']),
+    ('after_first_loop', 'global_capacity_one_winner', 'global', ['created', 'created']),
+    ('after_second_loop', 'duplicate_idempotency', 'duplicate', ['created', 'created']),
+])
+def test_outcome_shadow_real_check_runtime(monkeypatch, catalog, failure_point, assertion_id, scenario, codes):
+    """Call the real nested check via controlled races, never copy its implementation."""
+    from concurrent.futures import Future
+    from app.models import User, Conversation
+    run, data = catalog
+    application = Flask('outcome-shadow-runtime')
+    engine = Mock(dialect=SimpleNamespace(name='mysql'))
+    connection = engine.connect.return_value
+    connection.__enter__ = Mock(return_value=connection)
+    connection.__exit__ = Mock(return_value=False)
+    connection.execute.return_value.scalar_one.return_value = 500
+    session = Mock()
+    session.__enter__ = Mock(return_value=session)
+    session.__exit__ = Mock(return_value=False)
+    session.begin.return_value.__enter__ = Mock(return_value=session)
+    session.begin.return_value.__exit__ = Mock(return_value=False)
+    pending, counter = [], [0]
+
+    def flush():
+        for row in pending:
+            counter[0] += 1
+            if isinstance(row, User):
+                row.id = counter[0]
+            elif isinstance(row, Conversation):
+                row.id = format(counter[0], '032x')
+        pending.clear()
+    session.add_all.side_effect = pending.extend
+    session.add.side_effect = pending.append
+    session.flush.side_effect = flush
+    races = [[True, 'agent_user_busy'], [True, 'agent_global_capacity'], [False, True]]
+    index = {'before_loop': 0, 'after_first_loop': 1, 'after_second_loop': 2}[failure_point]
+    races[index] = [True, True]
+    race_counter = [0]
+
+    class Executor:
+        def __init__(self, size):
+            assert size == 2
+            self.index = race_counter[0]
+            race_counter[0] += 1
+            self.submitted = 0
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def submit(self, function, *args, **kwargs):
+            future = Future()
+            future.set_result((100 + self.submitted, races[self.index][self.submitted]))
+            self.submitted += 1
+            return future
+
+    precision = time_diagnostic()  # Existing fully validated synthetic MySQL facts.
+    assert admission_cases.valid_time_diagnostic(precision)
+    monkeypatch.setattr(admission_cases, 'Session', Mock(return_value=session))
+    monkeypatch.setattr(admission_cases, 'ThreadPoolExecutor', Executor)
+    monkeypatch.setattr(admission_cases, 'mysql_time_probe', Mock(return_value=precision))
+    monkeypatch.setattr(admission_cases, 'future_time_probe', Mock(return_value=precision))
+    begin = Mock(return_value={'created': True})
+    finish = Mock()
+    monkeypatch.setattr(admission_cases.c, '_begin_with_session', begin)
+    monkeypatch.setattr(admission_cases.c, 'finish_turn', finish)
+    with pytest.raises(admission_cases.AdmissionDiagnosticError) as raised:
+        admission_cases.verify_concurrency(application, engine)
+    diagnostic = raised.value.diagnostic
+    assert diagnostic == {'scenario_id': scenario, 'assertion_id': assertion_id,
+                          'expected': admission_cases.EXPECTED[assertion_id],
+                          'actual': codes, 'outcome_codes': codes, 'time_precision': precision}
+    run.stage, run.substage = 'crud', 'admission_concurrency'
+    run.state, run.admission_verified = 'HEAD_VERIFIED', False
+    payload = m.validate_result(m.safe_failure(raised.value, run))
+    assert payload['facts']['admission'] == diagnostic
+    assert payload['error_code'] == 'migration_admission_assertion_failed'
+    with pytest.raises(m.MigrationSafetyError, match='migration_cleanup_not_authorized'):
+        run.authorize_cleanup()
+    run.state = 'DATA_AND_DOWNGRADE_VERIFIED'
+    with pytest.raises(m.MigrationSafetyError, match='migration_admission_not_verified'):
+        run.authorize_cleanup()
+    assert not run.cleanup_authorized and not data.drops
+    assert begin.call_count == (0 if index == 0 else 1)
+    assert finish.call_count == (0, 1, 3)[index]
