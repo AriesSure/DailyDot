@@ -12,11 +12,12 @@ WINDOWS = ((60, 3), (3600, 20))
 
 
 def database_utc(session):
+    # Match DATETIME(0): use one whole-second database value for checks and writes.
     dialect = session.bind.dialect.name
     if dialect == 'mysql':
-        value = session.execute(sa.text('SELECT UTC_TIMESTAMP(6)')).scalar_one()
+        value = session.execute(sa.text('SELECT UTC_TIMESTAMP()')).scalar_one()
     elif dialect == 'sqlite':
-        value = session.execute(sa.text("SELECT strftime('%Y-%m-%d %H:%M:%f','now')")).scalar_one()
+        value = session.execute(sa.text("SELECT strftime('%Y-%m-%d %H:%M:%S','now')")).scalar_one()
     else:
         from app.agent.conversations import ConversationError
         raise ConversationError('agent_admission_unavailable')

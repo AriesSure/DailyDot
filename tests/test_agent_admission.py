@@ -247,3 +247,67 @@ def test_gate_database_checks_are_enforced(setup, key, version):
         db.session.commit()
     db.session.rollback()
     assert db.session.scalar(sa.select(sa.func.count()).select_from(AgentAdmissionGate)) == 0
+
+
+@pytest.mark.parametrize('fraction', [250000, 500000, 750000])
+def test_mysql_database_utc_requests_whole_seconds(fraction):
+    """Offline SQL contract, not a substitute for real MySQL CI."""
+    session = Mock()
+    session.bind.dialect.name = 'mysql'
+    source = datetime(2026, 1, 1, 12, 0, 0, fraction)
+
+    def execute(statement):
+        # Simulate the precision selected by SQL, rather than always returning zero microseconds.
+        sql = str(statement)
+        assert sql in ('SELECT UTC_TIMESTAMP()', 'SELECT UTC_TIMESTAMP(6)')
+        value = source.replace(microsecond=0) if sql == 'SELECT UTC_TIMESTAMP()' else source
+        return Mock(scalar_one=Mock(return_value=value))
+
+    session.execute.side_effect = execute
+    result = a.database_utc(session)
+    assert result == source.replace(microsecond=0, tzinfo=timezone.utc)
+    assert result.microsecond == 0 and result.tzinfo is timezone.utc
+    assert str(session.execute.call_args.args[0]) == 'SELECT UTC_TIMESTAMP()'
+    session.execute.assert_called_once()
+
+
+def test_sqlite_admission_uses_one_database_second_for_checks_and_persistence(app, db, monkeypatch):
+    from sqlalchemy.orm import Session
+
+    user = User(username='precision', email='precision@example.invalid')
+    db.session.add_all([user, AgentAdmissionGate(gate_key='global', lock_version=0)])
+    db.session.commit()
+    actual_clock = a.database_utc
+    captured = []
+
+    def clock(session):
+        value = actual_clock(session)
+        captured.append(value)
+        return value
+
+    monkeypatch.setattr(a, 'database_utc', clock)
+    with app.test_request_context():
+        login_user(user)
+        cid = c.create_conversation()['id']
+        rid, _ = begin(cid)
+        assert len(captured) == 1
+        stamp = captured[0]
+        assert stamp.microsecond == 0 and stamp.tzinfo is timezone.utc
+        # Read committed data through a fresh Session, not the original ORM identity map.
+        with Session(db.engine) as session:
+            turn = session.scalar(sa.select(ChatTurn).where(ChatTurn.client_request_id == rid))
+            assert turn.created_at == stamp
+            message = session.scalar(sa.select(ChatMessage).where(ChatMessage.turn_id == turn.id))
+            assert message.created_at == stamp
+            convo = session.get(Conversation, cid)
+            assert convo.active_started_at == stamp and convo.updated_at == stamp
+        done(cid, rid, 'failed')
+        # A genuinely future timestamp remains rejected; no tolerance or extra turn is introduced.
+        with Session(db.engine) as session, session.begin():
+            turn = session.scalar(sa.select(ChatTurn).where(ChatTurn.client_request_id == rid))
+            turn.created_at = actual_clock(session) + timedelta(days=1)
+        before = c.history(cid)
+        with pytest.raises(c.ConversationError, match='agent_admission_unavailable'):
+            begin(cid)
+        assert c.history(cid) == before
+        assert c.get_conversation(cid)['active_request_id'] is None
